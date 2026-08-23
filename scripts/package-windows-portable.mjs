@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -50,17 +50,23 @@ writeFileSync(
 );
 
 const compressed = spawnSync(
-  "powershell.exe",
+  "tar.exe",
   [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `Compress-Archive -LiteralPath '${packageRoot}' -DestinationPath '${archive}' -Force`,
+    "-a",
+    "-c",
+    "-f",
+    archive,
+    "-C",
+    packageRoot,
+    ".",
   ],
   { stdio: "inherit" },
 );
 if (compressed.status !== 0) {
   throw new Error(`Windows ZIP packaging failed with ${compressed.status ?? compressed.signal}`);
+}
+if (!existsSync(archive) || statSync(archive).size < statSync(join(runtime, "dsh-star-runtime.tar.gz")).size) {
+  throw new Error("Windows ZIP packaging produced an incomplete archive.");
 }
 
 console.log(`Portable Windows package created at ${archive}`);
