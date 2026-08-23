@@ -13,6 +13,7 @@ const desktopDeploy = join(destination, ".desktop-deploy");
 const marketDeploy = join(destination, ".market-deploy");
 const desktopPackage = join(root, "packages/dsh-star-desktop");
 const marketPackage = join(root, "packages/dsh-community-market");
+const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const lock = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
 const desktopDigest = createHash("sha256")
   .update(readFileSync(join(desktopPackage, "package.json")))
@@ -45,7 +46,7 @@ if (clientEnvironment?.DSH_CLIENT_BUILD_PROFILE !== "official"
   || clientEnvironment?.DSH_CLIENT_COMMIT_HASH !== lock.commit.slice(0, 7)) {
   throw new Error("Harness client artifacts were not built with the pinned official profile");
 }
-const pnpmVersion = execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim();
+const pnpmVersion = execFileSync(pnpmCommand, ["--version"], { encoding: "utf8" }).trim();
 if (!/^11\./.test(pnpmVersion)) {
   throw new Error(`Runtime assembly requires pnpm 11.x, received ${pnpmVersion}`);
 }
@@ -57,7 +58,7 @@ mkdirSync(destination, { recursive: true });
 // rc2 declares several runtime imports as workspace peers/dev dependencies.
 // A production-only deploy drops them, so keep the complete locked closure
 // until an automated import-closure reducer can prove a smaller set is safe.
-const deployed = spawnSync("pnpm", ["--filter", "@deepseek-ai/dsh", "deploy", "--legacy", harness], {
+const deployed = spawnSync(pnpmCommand, ["--filter", "@deepseek-ai/dsh", "deploy", "--legacy", harness], {
   cwd: upstream,
   env: { ...process.env, CI: "true" },
   stdio: "inherit",
@@ -148,7 +149,7 @@ for (const pkg of readdirSync(officialScope, { withFileTypes: true }).sort((a, b
 // DSH Star composes desktop-owned browser surfaces through the official
 // Cordis/client-module extension seam. It is copied beside, never into, an
 // upstream package and activated by an explicit launcher patch.
-const deployedDesktop = spawnSync("pnpm", ["--filter", "dsh-star-desktop", "deploy", "--legacy", desktopDeploy], {
+const deployedDesktop = spawnSync(pnpmCommand, ["--filter", "dsh-star-desktop", "deploy", "--legacy", desktopDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
   stdio: "inherit",
@@ -157,7 +158,7 @@ if (deployedDesktop.status !== 0) throw new Error(`Desktop plugin deploy failed 
 const desktopTarget = join(harness, "node_modules/dsh-star-desktop");
 relativizeInternalLinks(desktopDeploy, desktopDeploy, realpathSync(desktopPackage));
 renameSync(desktopDeploy, desktopTarget);
-const deployedMarket = spawnSync("pnpm", ["--filter", "dsh-community-market", "deploy", "--legacy", marketDeploy], {
+const deployedMarket = spawnSync(pnpmCommand, ["--filter", "dsh-community-market", "deploy", "--legacy", marketDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
   stdio: "inherit",
