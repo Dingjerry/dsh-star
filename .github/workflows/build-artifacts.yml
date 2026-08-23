@@ -28,6 +28,10 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
@@ -35,10 +39,6 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             upstream/deepseek-harness/pnpm-lock.yaml
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
 
       - uses: dtolnay/rust-toolchain@stable
 
