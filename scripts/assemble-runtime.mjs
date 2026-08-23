@@ -215,7 +215,19 @@ function materializeExternalLinks(directory, boundary = destination) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
-      const target = realpathSync(path);
+      let target;
+      try {
+        target = realpathSync(path);
+      } catch (error) {
+        // pnpm can leave an optional nested link dangling on Windows when the
+        // package's peer is already available from the runtime root. It must
+        // not abort release assembly or escape into the archive.
+        if (error?.code === "ENOENT") {
+          rmSync(path, { force: true, recursive: true });
+          continue;
+        }
+        throw error;
+      }
       if (relative(boundary, target).startsWith("..")) {
         rmSync(path, { force: true, recursive: true });
         cpSync(target, path, { recursive: true });
