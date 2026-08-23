@@ -22,7 +22,9 @@ jobs:
             bundles: app,dmg
           - os: windows-latest
             artifact: dsh-star-windows
-            bundles: nsis,msi
+            # NSIS cannot memory-map the bundled 200+ MB runtime archive on
+            # hosted Windows. MSI handles the same self-contained resource.
+            bundles: msi
     steps:
       - uses: actions/checkout@v4
         with:
