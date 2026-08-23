@@ -49,16 +49,15 @@ writeFileSync(
   ].join("\r\n"),
 );
 
+const sevenZip = "C:\\Program Files\\7-Zip\\7z.exe";
 const compressed = spawnSync(
-  "tar.exe",
+  sevenZip,
   [
-    "-a",
-    "-c",
-    "-f",
+    "a",
+    "-tzip",
+    "-mx=0",
     archive,
-    "-C",
-    packageRoot,
-    ".",
+    join(packageRoot, "*"),
   ],
   { stdio: "inherit" },
 );
