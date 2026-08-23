@@ -13,7 +13,8 @@ const desktopDeploy = join(destination, ".desktop-deploy");
 const marketDeploy = join(destination, ".market-deploy");
 const desktopPackage = join(root, "packages/dsh-star-desktop");
 const marketPackage = join(root, "packages/dsh-community-market");
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const pnpmCommand = "pnpm";
+const pnpmShell = process.platform === "win32";
 const lock = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
 const desktopDigest = createHash("sha256")
   .update(readFileSync(join(desktopPackage, "package.json")))
@@ -46,7 +47,7 @@ if (clientEnvironment?.DSH_CLIENT_BUILD_PROFILE !== "official"
   || clientEnvironment?.DSH_CLIENT_COMMIT_HASH !== lock.commit.slice(0, 7)) {
   throw new Error("Harness client artifacts were not built with the pinned official profile");
 }
-const pnpmVersion = execFileSync(pnpmCommand, ["--version"], { encoding: "utf8" }).trim();
+const pnpmVersion = execFileSync(pnpmCommand, ["--version"], { encoding: "utf8", shell: pnpmShell }).trim();
 if (!/^11\./.test(pnpmVersion)) {
   throw new Error(`Runtime assembly requires pnpm 11.x, received ${pnpmVersion}`);
 }
@@ -61,6 +62,7 @@ mkdirSync(destination, { recursive: true });
 const deployed = spawnSync(pnpmCommand, ["--filter", "@deepseek-ai/dsh", "deploy", "--legacy", harness], {
   cwd: upstream,
   env: { ...process.env, CI: "true" },
+  shell: pnpmShell,
   stdio: "inherit",
 });
 if (deployed.status !== 0) throw new Error(`Harness deploy failed with ${deployed.status ?? deployed.signal}`);
@@ -152,6 +154,7 @@ for (const pkg of readdirSync(officialScope, { withFileTypes: true }).sort((a, b
 const deployedDesktop = spawnSync(pnpmCommand, ["--filter", "dsh-star-desktop", "deploy", "--legacy", desktopDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
+  shell: pnpmShell,
   stdio: "inherit",
 });
 if (deployedDesktop.status !== 0) throw new Error(`Desktop plugin deploy failed with ${deployedDesktop.status ?? deployedDesktop.signal}`);
@@ -161,6 +164,7 @@ renameSync(desktopDeploy, desktopTarget);
 const deployedMarket = spawnSync(pnpmCommand, ["--filter", "dsh-community-market", "deploy", "--legacy", marketDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
+  shell: pnpmShell,
   stdio: "inherit",
 });
 if (deployedMarket.status !== 0) throw new Error(`Market deploy failed with ${deployedMarket.status ?? deployedMarket.signal}`);
