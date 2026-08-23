@@ -1,0 +1,8 @@
+node_modules/
+.pnpm-store/
+.DS_Store
+dist/
+src-tauri/target/
+src-tauri/gen/
+runtime-dist/
+!upstream/.gitkeep

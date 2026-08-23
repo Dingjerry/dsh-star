@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH Star · v0.1.0</title>
+    <style>
+      :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,ui-sans-serif,system-ui,sans-serif;background:#080d18;color:#f7f9ff}
+      *{box-sizing:border-box}body{margin:0;min-height:100vh;overflow:hidden;background:#080d18}
+      body:before,body:after{content:"";position:fixed;pointer-events:none;border-radius:50%;filter:blur(2px)}
+      body:before{width:70vw;height:70vw;left:-22vw;top:-34vw;background:#254b9c55;box-shadow:0 0 180px #315bb755}
+      body:after{width:56vw;height:56vw;right:-20vw;bottom:-30vw;background:#562d9b44;box-shadow:0 0 180px #6b42c744}
+      .scene{min-height:100vh;display:grid;place-items:center;padding:32px;position:relative}
+      main{width:min(560px,100%);padding:48px 52px 42px;border:1px solid #ffffff20;border-radius:30px;background:linear-gradient(145deg,#141f35e8,#0d1527e8);box-shadow:0 35px 100px #0009,inset 0 1px #ffffff12;backdrop-filter:blur(24px);text-align:center;animation:rise .7s ease-out both}
+      .brand{width:86px;height:86px;margin:0 auto 24px;display:grid;place-items:center;border-radius:25px;background:linear-gradient(145deg,#fff,#eceef2);box-shadow:0 16px 35px #0006,0 0 0 1px #ffffffaa}.brand img{width:72px;height:72px}
+      h1{margin:0;font-size:34px;line-height:1.15;letter-spacing:-.04em;font-weight:720}h1 span{display:block;margin-top:8px;color:#9eacc4;font-size:15px;letter-spacing:.01em;font-weight:500}
+      .tagline{margin:24px auto 0;max-width:440px;color:#c3cde0;font-size:16px;line-height:1.7}.tagline em{font-style:normal;color:#edf2ff}
+      .status-shell{margin-top:27px;padding:14px 17px;border:1px solid #ffffff12;border-radius:14px;background:#ffffff09;text-align:left;display:flex;align-items:center;gap:12px}.pulse{width:9px;height:9px;flex:none;border-radius:50%;background:#78a8ff;box-shadow:0 0 0 0 #78a8ff88;animation:pulse 1.8s infinite}.status-shell.failed .pulse{background:#ff9f43;animation:none;box-shadow:none}#status{min-width:0;color:#d6e0f1;font-size:14px;line-height:1.5}.hint{margin:18px 0 0;color:#91a0b8;font-size:12px;line-height:1.6}button{margin-top:18px;border:1px solid #ffffff26;border-radius:12px;padding:10px 18px;background:#6686e8;color:#fff;font:inherit;cursor:pointer;box-shadow:0 8px 20px #314caa44}button:hover{background:#7897f3}button[hidden]{display:none}
+      @keyframes pulse{0%,100%{box-shadow:0 0 0 0 #78a8ff66}50%{box-shadow:0 0 0 8px #78a8ff00}}@keyframes rise{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}@media(max-width:560px){.scene{padding:18px}main{padding:42px 26px 34px}.brand{width:82px;height:82px}.brand svg{width:62px;height:62px}h1{font-size:34px}}
+    </style>
+  </head>
+  <body><div class="scene"><main>
+    <div class="brand" aria-label="DeepSeek"><img src="deepseek-logo.svg" alt="DeepSeek" /></div>
+    <h1>DSH Star <span>社区 Tauri 桌面版 · v0.1.0</span></h1><p class="tagline"><em>让每一次创造，都有一个舒服的开始。</em><br/>正在准备官方 Harness 工作空间</p>
+    <div id="status-shell" class="status-shell"><i class="pulse"></i><div id="status">正在连接 DeepSeek Harness…</div></div><p class="hint">基于 DeepSeek Harness 官方开源源码，由 Tauri 2 与 Rust 原生封装。<br/><span lang="en">A calm Tauri desktop edition of the official DeepSeek Harness.</span></p><button id="retry" hidden onclick="location.reload()">重新连接 / Reconnect</button>
+  </main></div><script>const status=document.querySelector('#status'),shell=document.querySelector('#status-shell'),retry=document.querySelector('#retry');window.__DSH_STAR_SET_STATUS__=(message,failed=false)=>{status.textContent=message;shell.classList.toggle('failed',failed);retry.hidden=!failed};</script></body>
+</html>

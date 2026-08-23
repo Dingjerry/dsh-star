@@ -1,0 +1,65 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: dsh-star-macos
+            bundles: app,dmg
+          - os: windows-latest
+            artifact: dsh-star-windows
+            bundles: nsis,msi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            upstream/deepseek-harness/pnpm-lock.yaml
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Star dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install official Harness dependencies
+        run: pnpm --dir upstream/deepseek-harness install --frozen-lockfile
+      - name: Build pinned official Harness
+        run: pnpm upstream:build
+      - name: Assemble bundled runtime
+        run: pnpm runtime:build
+      - name: Build desktop bundle
+        run: pnpm dlx @tauri-apps/cli@^2 tauri build --bundles "${{ matrix.bundles }}"
+
+      - name: Upload unsigned test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe

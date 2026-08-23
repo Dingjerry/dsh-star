@@ -1,0 +1,23 @@
+{
+  "name": "dsh-star",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Star — Tauri desktop host for DeepSeek Harness",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "check": "node scripts/verify-upstream.mjs && cargo check --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "upstream:check": "node scripts/verify-upstream.mjs",
+    "upstream:build": "pnpm --dir upstream/deepseek-harness run build:official",
+    "runtime:build": "node scripts/assemble-runtime.mjs",
+    "runtime:smoke": "node scripts/smoke-runtime.mjs"
+  }
+}

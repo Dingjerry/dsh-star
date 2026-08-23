@@ -1,0 +1,10 @@
+import type { CatalogProviderPage } from './generated/catalog-provider-page.js';
+import type { CatalogQuery } from './generated/catalog-query.js';
+import type { CatalogSnapshot } from './generated/catalog-snapshot.js';
+import type { CatalogSourceManifest } from './generated/catalog-source.js';
+import type { LocalSourceRecord } from './types.js';
+export declare function parseCatalogSource(value: unknown): CatalogSourceManifest;
+export declare function parseCatalogQuery(value: unknown): CatalogQuery;
+export declare function parseCatalogProviderPage(value: unknown, effectiveLimit?: number): CatalogProviderPage;
+export declare function parseCatalogSnapshot(value: unknown): CatalogSnapshot;
+export declare function validateLocalSourceRecords(records: readonly LocalSourceRecord[]): void;

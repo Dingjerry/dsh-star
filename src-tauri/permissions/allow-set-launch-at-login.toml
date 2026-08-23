@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-set-launch-at-login"
+description = "Enable or disable DSH Star login launch."
+commands.allow = ["set_launch_at_login"]

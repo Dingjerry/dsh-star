@@ -1,0 +1,50 @@
+{
+  "name": "dsh-community-market",
+  "version": "0.1.0-dev.0",
+  "private": true,
+    "description": "First-party community plugin discovery for DSH Star",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./contracts": {
+      "types": "./lib/contracts/index.d.ts",
+      "default": "./lib/contracts/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "semver": "7.7.3",
+    "sharp": "0.35.3",
+    "yaml": "2.9.0"
+  },
+  "dshStar": {
+    "upstream": "https://github.com/Dingjerry/dsh-star",
+    "commit": "6201080cfaa2f9b0864333e9da695cde71d3f1e1",
+    "license": "MIT",
+    "integration": "Harness Host/Client plugin; Electron desktop capabilities remain optional"
+  }
+}

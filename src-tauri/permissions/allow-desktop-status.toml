@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-status"
+description = "Read the bounded DSH Star runtime status."
+commands.allow = ["desktop_status"]

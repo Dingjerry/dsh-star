@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-close-window-action"
+description = "Complete the user-confirmed DSH Star window close action."
+commands.allow = ["close_window_action"]

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-set-close-behavior"
+description = "Persist the DSH Star close behavior preference."
+commands.allow = ["set_close_behavior"]
