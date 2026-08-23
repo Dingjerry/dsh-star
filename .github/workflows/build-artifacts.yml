@@ -19,12 +19,12 @@ jobs:
         include:
           - os: macos-latest
             artifact: dsh-star-macos
-            bundles: app,dmg
+            build_args: --bundles app,dmg
           - os: windows-latest
             artifact: dsh-star-windows
-            # NSIS cannot memory-map the bundled 200+ MB runtime archive on
-            # hosted Windows. MSI handles the same self-contained resource.
-            bundles: msi
+            # Hosted NSIS and WiX cannot reliably package the 200+ MB runtime
+            # archive. The portable ZIP remains fully self-contained.
+            build_args: --no-bundle
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +53,10 @@ jobs:
       - name: Assemble bundled runtime
         run: pnpm runtime:build
       - name: Build desktop bundle
-        run: pnpm dlx @tauri-apps/cli@^2 build --bundles "${{ matrix.bundles }}"
+        run: pnpm dlx @tauri-apps/cli@^2 build ${{ matrix.build_args }}
+      - name: Package portable Windows build
+        if: runner.os == 'Windows'
+        run: pnpm package:windows-portable
 
       - name: Upload unsigned test artifacts
         uses: actions/upload-artifact@v4
@@ -65,3 +68,4 @@ jobs:
             src-tauri/target/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.zip

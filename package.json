@@ -18,6 +18,7 @@
     "upstream:check": "node scripts/verify-upstream.mjs",
     "upstream:build": "pnpm --dir upstream/deepseek-harness run build:official",
     "runtime:build": "node scripts/assemble-runtime.mjs",
-    "runtime:smoke": "node scripts/smoke-runtime.mjs"
+    "runtime:smoke": "node scripts/smoke-runtime.mjs",
+    "package:windows-portable": "node scripts/package-windows-portable.mjs"
   }
 }
