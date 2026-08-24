@@ -60,6 +60,120 @@ struct DesktopStatus {
     updates_enabled: bool,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeCheck {
+    node_found: bool,
+    node_path: Option<String>,
+    node_version: Option<String>,
+    harness_found: bool,
+    dependencies_ready: bool,
+    can_start: bool,
+    message: String,
+}
+
+#[cfg(debug_assertions)]
+fn node_version(node: &Path) -> Option<String> {
+    let output = Command::new(node).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(debug_assertions)]
+fn supported_node(version: Option<&str>) -> bool {
+    let Some(version) = version else { return false };
+    let mut parts = version.trim_start_matches('v').split('.');
+    let major = parts.next().and_then(|value| value.parse::<u64>().ok());
+    let minor = parts.next().and_then(|value| value.parse::<u64>().ok());
+    matches!((major, minor), (Some(major), Some(minor)) if major >= 24 || (major == 22 && minor >= 19))
+}
+
+#[cfg(debug_assertions)]
+fn inspect_project_runtime() -> RuntimeCheck {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let node = std::env::var_os("DSH_STAR_NODE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("node"));
+    let version = node_version(&node);
+    let cli = root.join("upstream/deepseek-harness/apps/cli/lib/bin.js");
+    let harness_found = cli.is_file();
+    let dependencies_ready = root.join("upstream/deepseek-harness/node_modules").is_dir()
+        && root
+            .join("runtime-dist/current/harness/node_modules/dsh-community-market")
+            .is_dir()
+        && root
+            .join("packages/dsh-star-desktop/cordis.patch.yml")
+            .is_file();
+    let can_start = supported_node(version.as_deref()) && harness_found && dependencies_ready;
+    let message = if can_start {
+        "已检测到可用的 Node.js、Harness 和桌面依赖。".into()
+    } else if !supported_node(version.as_deref()) {
+        "未检测到可用 Node.js（需要 22.19+）。".into()
+    } else if !harness_found {
+        "当前项目缺少官方 Harness 源码，请先初始化子模块。".into()
+    } else {
+        "项目依赖尚未安装或运行时未构建。".into()
+    };
+    RuntimeCheck {
+        node_found: version.is_some(),
+        node_path: version.as_ref().map(|_| node.display().to_string()),
+        node_version: version,
+        harness_found,
+        dependencies_ready,
+        can_start,
+        message,
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn inspect_project_runtime() -> RuntimeCheck {
+    RuntimeCheck {
+        node_found: true,
+        node_path: None,
+        node_version: None,
+        harness_found: true,
+        dependencies_ready: true,
+        can_start: true,
+        message: "将使用已验证的 DSH Star 内置运行时。".into(),
+    }
+}
+
+#[tauri::command]
+fn runtime_check() -> RuntimeCheck {
+    inspect_project_runtime()
+}
+
+#[tauri::command]
+fn install_runtime_dependencies() -> Result<String, String> {
+    #[cfg(not(debug_assertions))]
+    return Err("正式版不会执行任意系统安装；请使用签名运行时安装包。".into());
+
+    #[cfg(debug_assertions)]
+    {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let status = Command::new("pnpm")
+            .args(["install", "--frozen-lockfile"])
+            .current_dir(root.join("upstream/deepseek-harness"))
+            .status()
+            .map_err(|error| format!("无法运行 pnpm：{error}"))?;
+        if !status.success() {
+            return Err("Harness 依赖安装失败，请查看终端输出。".into());
+        }
+        let status = Command::new("pnpm")
+            .args(["runtime:build"])
+            .current_dir(&root)
+            .status()
+            .map_err(|error| format!("无法构建 DSH Star 运行时：{error}"))?;
+        if !status.success() {
+            return Err("桌面运行时构建失败，请查看终端输出。".into());
+        }
+        Ok("依赖已安装，运行时已准备完成。请点击重新连接。".into())
+    }
+}
+
 #[tauri::command]
 fn desktop_status(app: tauri::AppHandle) -> Result<DesktopStatus, String> {
     let state = app.state::<AppState>();
@@ -318,6 +432,10 @@ fn runtime_command(app: &tauri::AppHandle) -> Result<RuntimeCommand, String> {
     #[cfg(debug_assertions)]
     {
         let _ = app;
+        let check = inspect_project_runtime();
+        if !check.can_start {
+            return Err(check.message);
+        }
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let cli = root.join("upstream/deepseek-harness/apps/cli/lib/bin.js");
         let desktop = root.join("packages/dsh-star-desktop");
@@ -620,6 +738,8 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_status,
+            runtime_check,
+            install_runtime_dependencies,
             set_launch_at_login,
             set_close_behavior,
             close_window_action

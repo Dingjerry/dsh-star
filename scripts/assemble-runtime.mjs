@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,10 +56,11 @@ if (existsSync(destination)) {
 }
 mkdirSync(destination, { recursive: true });
 
-// rc2 declares several runtime imports as workspace peers/dev dependencies.
-// A production-only deploy drops them, so keep the complete locked closure
-// until an automated import-closure reducer can prove a smaller set is safe.
-const deployed = spawnSync(pnpmCommand, ["--filter", "@deepseek-ai/dsh", "deploy", "--legacy", harness], {
+// Start from the production dependency graph. Runtime-only workspace peers are
+// added explicitly below from the pinned, already-built official checkout.
+// Shipping the complete development graph adds compilers, linters and tests to
+// the desktop bundle and more than doubles its size.
+const deployed = spawnSync(pnpmCommand, ["--filter", "@deepseek-ai/dsh", "deploy", "--prod", "--legacy", harness], {
   cwd: upstream,
   env: { ...process.env, CI: "true" },
   shell: pnpmShell,
@@ -151,7 +152,7 @@ for (const pkg of readdirSync(officialScope, { withFileTypes: true }).sort((a, b
 // DSH Star composes desktop-owned browser surfaces through the official
 // Cordis/client-module extension seam. It is copied beside, never into, an
 // upstream package and activated by an explicit launcher patch.
-const deployedDesktop = spawnSync(pnpmCommand, ["--filter", "dsh-star-desktop", "deploy", "--legacy", desktopDeploy], {
+const deployedDesktop = spawnSync(pnpmCommand, ["--filter", "dsh-star-desktop", "deploy", "--prod", "--legacy", desktopDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
   shell: pnpmShell,
@@ -161,7 +162,7 @@ if (deployedDesktop.status !== 0) throw new Error(`Desktop plugin deploy failed 
 const desktopTarget = join(harness, "node_modules/dsh-star-desktop");
 relativizeInternalLinks(desktopDeploy, desktopDeploy, realpathSync(desktopPackage));
 renameSync(desktopDeploy, desktopTarget);
-const deployedMarket = spawnSync(pnpmCommand, ["--filter", "dsh-community-market", "deploy", "--legacy", marketDeploy], {
+const deployedMarket = spawnSync(pnpmCommand, ["--filter", "dsh-community-market", "deploy", "--prod", "--legacy", marketDeploy], {
   cwd: root,
   env: { ...process.env, CI: "true" },
   shell: pnpmShell,
@@ -259,6 +260,15 @@ function relativizeInternalLinks(directory, boundary, sourcePackage) {
 materializeExternalLinks(destination);
 const archived = spawnSync("tar", ["-czf", archive, "-C", destination, "."], { stdio: "inherit" });
 if (archived.status !== 0) throw new Error(`Runtime archive failed with ${archived.status ?? archived.signal}`);
+
+// A Windows junction can accidentally expand the pnpm store while creating the
+// archive. Fail the build instead of publishing a multi-gigabyte package.
+const archiveBytes = statSync(archive).size;
+const maxArchiveBytes = 1024 * 1024 * 1024;
+if (archiveBytes > maxArchiveBytes) {
+  rmSync(archive, { force: true });
+  throw new Error(`Runtime archive is unexpectedly large (${archiveBytes} bytes); refusing to publish it.`);
+}
 
 console.log(`Runtime assembled at ${destination}`);
 console.log(`Bundle-safe runtime archive created at ${archive}`);

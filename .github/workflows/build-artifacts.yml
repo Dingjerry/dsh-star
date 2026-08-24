@@ -20,11 +20,13 @@ jobs:
           - os: macos-latest
             artifact: dsh-star-macos
             build_args: --bundles app,dmg
+            artifact_path: src-tauri/target/release/bundle/dmg/*.dmg
           - os: windows-latest
             artifact: dsh-star-windows
             # Hosted NSIS and WiX cannot reliably package the 200+ MB runtime
             # archive. The portable ZIP remains fully self-contained.
             build_args: --no-bundle
+            artifact_path: src-tauri/target/release/bundle/portable/*.zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,9 +65,4 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
-          path: |
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.app
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.zip
+          path: ${{ matrix.artifact_path }}

@@ -1,5 +1,19 @@
 # DSH Star
 
+## 简体中文
+
+DSH Star 是基于 DeepSeek Harness 官方开源源码、使用 Tauri 2 与 Rust
+封装的社区桌面版。它保留官方 Harness Host、Web UI、Profile 和插件生态，
+由原生桌面外壳负责窗口、运行时进程和系统集成。
+
+当前测试版包含 macOS 和 Windows 构建。构建产物会在 GitHub Actions 的
+`Build release artifacts` 任务中生成，下载后请先解压再运行。由于测试版包含
+Node.js、官方 Harness 和依赖，文件体积较大；后续会提供检测本机环境的轻量版。
+
+下载：[GitHub Actions 构建记录](https://github.com/Dingjerry/dsh-star/actions/runs/32655615129)
+
+## English
+
 DSH Star is a Tauri/Rust desktop distribution built on the official
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) source code.
 It aims to provide an install-and-run desktop experience while preserving the
