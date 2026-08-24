@@ -295,6 +295,8 @@ struct UpstreamLock {
 #[derive(serde::Deserialize)]
 struct ManagedManifest {
     harness: ManagedHarness,
+    platform: String,
+    architecture: String,
 }
 
 #[cfg(not(debug_assertions))]
@@ -354,6 +356,21 @@ fn validate_runtime(root: &Path, manifest: &str) -> bool {
 }
 
 #[cfg(not(debug_assertions))]
+fn runtime_matches_platform(manifest: &ManagedManifest) -> bool {
+    let expected_platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        value => value,
+    };
+    let expected_architecture = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        value => value,
+    };
+    manifest.platform == expected_platform && manifest.architecture == expected_architecture
+}
+
+#[cfg(not(debug_assertions))]
 fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
         .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
@@ -375,7 +392,10 @@ fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         let Ok(metadata) = serde_json::from_str::<ManagedManifest>(&manifest) else {
             continue;
         };
-        if metadata.harness.commit == lock.commit && validate_runtime(&root, &manifest) {
+        if metadata.harness.commit == lock.commit
+            && runtime_matches_platform(&metadata)
+            && validate_runtime(&root, &manifest)
+        {
             return Ok(root);
         }
     }
@@ -432,6 +452,8 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("DSH-Star/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30 * 60))
         .build()
         .map_err(|error| format!("无法初始化下载器：{error}"))?;
     let response = client
@@ -454,12 +476,27 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
         return Err("运行时包超过安全体积限制。".into());
     }
 
-    let signature = client
+    let signature_response = client
         .get(format!("{url}.sig"))
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::bytes)
         .map_err(|error| format!("运行时签名下载失败：{error}"))?;
+    if signature_response
+        .content_length()
+        .is_some_and(|size| size > 1024)
+    {
+        let _ = fs::remove_file(&download);
+        return Err("运行时签名超过安全体积限制。".into());
+    }
+    let mut signature = Vec::with_capacity(64);
+    signature_response
+        .take(1025)
+        .read_to_end(&mut signature)
+        .map_err(|error| format!("读取运行时签名失败：{error}"))?;
+    if signature.len() > 1024 {
+        let _ = fs::remove_file(&download);
+        return Err("运行时签名超过安全体积限制。".into());
+    }
     let signature =
         Signature::from_slice(&signature).map_err(|_| "运行时签名格式无效。".to_string())?;
     let mut archive = fs::File::open(&download).map_err(|error| error.to_string())?;
@@ -494,12 +531,25 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
         serde_json::from_str(&manifest).map_err(|error| format!("运行时清单无效：{error}"))?;
     let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
         .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
-    if metadata.harness.commit != lock.commit || !validate_runtime(&staging, &manifest) {
+    if metadata.harness.commit != lock.commit
+        || !runtime_matches_platform(&metadata)
+        || !validate_runtime(&staging, &manifest)
+    {
         let _ = fs::remove_dir_all(&staging);
         let _ = fs::remove_file(&download);
         return Err("运行时与当前 DSH Star 版本不匹配。".into());
     }
-    let destination = base.join(format!("{}-signed", metadata.harness.commit));
+    let digest_hex = format!("{digest:x}");
+    let destination = base.join(format!(
+        "{}-{}-signed",
+        metadata.harness.commit,
+        &digest_hex[..12]
+    ));
+    if validate_runtime(&destination, &manifest) {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_file(&download);
+        return Ok(destination);
+    }
     if destination.exists() {
         fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
     }
