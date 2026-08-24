@@ -270,8 +270,32 @@ function relativizeInternalLinks(directory, boundary, sourcePackage) {
     if (entry.isDirectory()) relativizeInternalLinks(path, boundary, sourcePackage);
   }
 }
+function materializeWindowsLinks(directory, boundary = destination) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = realpathSync(path);
+      if (relative(boundary, target).startsWith("..")) {
+        throw new Error(`Windows runtime retained an external reparse point: ${path}`);
+      }
+      // Refuse links that point to an ancestor: dereferencing one would create
+      // an infinite copy and is always a malformed deploy tree.
+      if (!relative(target, path).startsWith("..")) {
+        throw new Error(`Windows runtime contains a cyclic reparse point: ${path}`);
+      }
+      rmSync(path, { force: true, recursive: true });
+      cpSync(target, path, { recursive: true, dereference: true });
+      materializeWindowsLinks(path, boundary);
+      continue;
+    }
+    if (entry.isDirectory()) materializeWindowsLinks(path, boundary);
+  }
+}
 materializeExternalLinks(destination);
 if (process.platform === "win32") {
+  // Do not pass junctions to an archive tool. Windows archive utilities may
+  // follow reparse points and duplicate the pnpm tree recursively.
+  materializeWindowsLinks(destination);
   // Windows bsdtar follows directory junctions in pnpm's virtual store and
   // duplicates the same packages many times. 7-Zip's -snl/-snh switches keep
   // reparse points as links, matching the compact Unix archive semantics.
