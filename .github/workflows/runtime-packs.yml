@@ -12,7 +12,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - os: macos-latest
@@ -40,6 +39,7 @@ jobs:
       - name: Build pinned official Harness
         run: pnpm upstream:build
       - name: Assemble runtime closure
+        timeout-minutes: 20
         run: pnpm runtime:build
       - name: Smoke test runtime
         run: pnpm runtime:smoke

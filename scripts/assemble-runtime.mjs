@@ -273,7 +273,14 @@ if (process.platform === "win32") {
   if (tarred.status !== 0) {
     throw new Error(`Runtime tar packaging failed with ${tarred.status ?? tarred.signal}`);
   }
-  const gzipped = spawnSync(sevenZip, ["a", "-tgzip", "-mx=9", archive, tarPath], {
+  const tarBytes = statSync(tarPath).size;
+  const maxTarBytes = 900 * 1024 * 1024;
+  if (tarBytes > maxTarBytes) {
+    rmSync(tarPath, { force: true });
+    throw new Error(`Runtime tar is unexpectedly large (${tarBytes} bytes); refusing to compress it.`);
+  }
+  console.log(`Compressing ${tarBytes} runtime bytes with balanced gzip settings`);
+  const gzipped = spawnSync(sevenZip, ["a", "-tgzip", "-mx=5", "-mmt=on", archive, tarPath], {
     stdio: "inherit",
   });
   rmSync(tarPath, { force: true });
