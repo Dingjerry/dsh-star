@@ -35,7 +35,7 @@
             retry.hidden=false; retry.textContent='安装运行环境 / Install';
             retry.onclick=async()=>{
               retry.disabled=true; retry.textContent='正在安装…';
-              try{status.textContent=await window.__TAURI__.core.invoke('install_runtime_dependencies');location.reload();}
+              try{status.textContent=await window.__TAURI__.core.invoke('install_runtime_dependencies');retry.hidden=true;shell.classList.remove('failed');}
               catch(e){window.__DSH_STAR_SET_STATUS__(String(e),true);retry.disabled=false;retry.textContent='重试安装 / Retry';}
             };
           }

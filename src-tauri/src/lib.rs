@@ -1,5 +1,5 @@
-#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
-use std::fs::File;
+#[cfg(not(debug_assertions))]
+use std::io::{Read, Write};
 use std::{fs, path::Path};
 use std::{
     io::{BufRead, BufReader},
@@ -169,9 +169,13 @@ fn runtime_check(app: tauri::AppHandle) -> RuntimeCheck {
 }
 
 #[tauri::command]
-fn install_runtime_dependencies() -> Result<String, String> {
+fn install_runtime_dependencies(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(not(debug_assertions))]
-    return Err("尚未安装受信任的 DSH Star 运行时；在线签名安装将在下一步接入。".into());
+    {
+        install_downloaded_runtime(&app)?;
+        start_runtime(&app)?;
+        Ok("运行时安装完成，DeepSeek Harness 正在启动。".into())
+    }
 
     #[cfg(debug_assertions)]
     {
@@ -192,7 +196,8 @@ fn install_runtime_dependencies() -> Result<String, String> {
         if !status.success() {
             return Err("桌面运行时构建失败，请查看终端输出。".into());
         }
-        Ok("依赖已安装，运行时已准备完成。请点击重新连接。".into())
+        start_runtime(&app)?;
+        Ok("依赖已安装，DeepSeek Harness 正在启动。".into())
     }
 }
 
@@ -377,6 +382,135 @@ fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Err("未找到与当前版本匹配的受管理运行时，请点击安装。".into())
 }
 
+#[cfg(not(debug_assertions))]
+fn runtime_asset_name() -> Result<&'static str, String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("dsh-star-runtime-macos-arm64.tar.gz"),
+        ("windows", "x86_64") => Ok("dsh-star-runtime-windows-x64.tar.gz"),
+        _ => Err(format!(
+            "当前平台尚无运行时包：{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    use sha2::{Digest, Sha256};
+
+    const PUBLIC_KEY: [u8; 32] = [
+        0x2b, 0x41, 0x30, 0xbf, 0x00, 0xd6, 0x1d, 0x54, 0x36, 0xf1, 0x36, 0xa0, 0xd6, 0xed, 0xd9,
+        0x74, 0x43, 0xf1, 0x60, 0x7f, 0x79, 0x19, 0x7d, 0x77, 0x90, 0x4f, 0x9a, 0x26, 0x48, 0xf4,
+        0x20, 0xa2,
+    ];
+    const MAX_RUNTIME_BYTES: u64 = 1024 * 1024 * 1024;
+    const RUNTIME_RELEASE: &str = "runtime-b150a551b8d4";
+
+    let asset = runtime_asset_name()?;
+    let url = format!(
+        "https://github.com/Dingjerry/dsh-star/releases/download/{RUNTIME_RELEASE}/{asset}"
+    );
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("runtime");
+    fs::create_dir_all(&base).map_err(|error| error.to_string())?;
+    let download = base.join(format!(".{asset}-{}.download", std::process::id()));
+    let staging = base.join(format!(".runtime-{}.staging", std::process::id()));
+    for temporary in [&download, &staging] {
+        if temporary.exists() {
+            if temporary.is_dir() {
+                fs::remove_dir_all(temporary).map_err(|error| error.to_string())?;
+            } else {
+                fs::remove_file(temporary).map_err(|error| error.to_string())?;
+            }
+        }
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("DSH-Star/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("无法初始化下载器：{error}"))?;
+    let response = client
+        .get(&url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("运行时下载失败：{error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RUNTIME_BYTES)
+    {
+        return Err("运行时包超过安全体积限制。".into());
+    }
+    let mut archive = fs::File::create(&download).map_err(|error| error.to_string())?;
+    let copied = std::io::copy(&mut response.take(MAX_RUNTIME_BYTES + 1), &mut archive)
+        .map_err(|error| format!("保存运行时失败：{error}"))?;
+    archive.flush().map_err(|error| error.to_string())?;
+    if copied > MAX_RUNTIME_BYTES {
+        let _ = fs::remove_file(&download);
+        return Err("运行时包超过安全体积限制。".into());
+    }
+
+    let signature = client
+        .get(format!("{url}.sig"))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::bytes)
+        .map_err(|error| format!("运行时签名下载失败：{error}"))?;
+    let signature =
+        Signature::from_slice(&signature).map_err(|_| "运行时签名格式无效。".to_string())?;
+    let mut archive = fs::File::open(&download).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = archive
+            .read(&mut buffer)
+            .map_err(|error| format!("读取运行时失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let digest = hasher.finalize();
+    VerifyingKey::from_bytes(&PUBLIC_KEY)
+        .map_err(|_| "内置运行时公钥无效。".to_string())?
+        .verify_strict(&digest, &signature)
+        .map_err(|_| "运行时签名验证失败，安装已取消。".to_string())?;
+
+    fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
+    let archive = fs::File::open(&download).map_err(|error| error.to_string())?;
+    let decoder = flate2::read::GzDecoder::new(archive);
+    if let Err(error) = tar::Archive::new(decoder).unpack(&staging) {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_file(&download);
+        return Err(format!("运行时解压失败：{error}"));
+    }
+    let manifest = fs::read_to_string(staging.join("runtime.json"))
+        .map_err(|error| format!("运行时清单缺失：{error}"))?;
+    let metadata: ManagedManifest =
+        serde_json::from_str(&manifest).map_err(|error| format!("运行时清单无效：{error}"))?;
+    let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
+        .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
+    if metadata.harness.commit != lock.commit || !validate_runtime(&staging, &manifest) {
+        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_file(&download);
+        return Err("运行时与当前 DSH Star 版本不匹配。".into());
+    }
+    let destination = base.join(format!("{}-signed", metadata.harness.commit));
+    if destination.exists() {
+        fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&staging, &destination).map_err(|error| {
+        let _ = fs::remove_dir_all(&staging);
+        format!("运行时激活失败：{error}")
+    })?;
+    let _ = fs::remove_file(&download);
+    Ok(destination)
+}
+
 #[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 fn install_runtime(app: &tauri::AppHandle, resources: &Path) -> Result<PathBuf, String> {
     let manifest = fs::read_to_string(resources.join("runtime/runtime.json"))
@@ -449,7 +583,7 @@ fn install_runtime(app: &tauri::AppHandle, resources: &Path) -> Result<PathBuf, 
     }
     fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
 
-    let archive = File::open(resources.join("runtime/dsh-star-runtime.tar.gz"))
+    let archive = fs::File::open(resources.join("runtime/dsh-star-runtime.tar.gz"))
         .map_err(|error| format!("failed to open the signed runtime: {error}"))?;
     let decoder = flate2::read::GzDecoder::new(archive);
     if let Err(error) = tar::Archive::new(decoder).unpack(&staging) {

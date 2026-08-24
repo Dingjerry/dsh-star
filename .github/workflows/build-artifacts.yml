@@ -49,9 +49,28 @@ jobs:
       - name: Build desktop bundle
         run: pnpm dlx @tauri-apps/cli@^2 build ${{ matrix.build_args }}
 
+      - name: Package portable macOS app
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/DSH Star.app" "src-tauri/target/release/bundle/DSH-Star_0.1.0_macos-arm64.app.zip"
+      - name: Package portable Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "src-tauri/target/release/bundle/portable/DSH Star" | Out-Null
+          Copy-Item "src-tauri/target/release/dsh-star.exe" "src-tauri/target/release/bundle/portable/DSH Star/DSH Star.exe"
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "src-tauri/target/release/bundle/DSH-Star_0.1.0_windows-x64_portable.zip" "src-tauri/target/release/bundle/portable/DSH Star/*"
+
       - name: Upload unsigned test artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
           path: ${{ matrix.artifact_path }}
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-portable
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/*.app.zip
+            src-tauri/target/release/bundle/*_portable.zip

@@ -1,0 +1,57 @@
+name: Build signed runtime packs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  runtime:
+    name: Runtime ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      max-parallel: 1
+      matrix:
+        include:
+          - os: macos-latest
+            asset: dsh-star-runtime-macos-arm64.tar.gz
+          - os: windows-latest
+            asset: dsh-star-runtime-windows-x64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            upstream/deepseek-harness/pnpm-lock.yaml
+      - name: Install Star dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install official Harness dependencies
+        run: pnpm --dir upstream/deepseek-harness install --frozen-lockfile
+      - name: Build pinned official Harness
+        run: pnpm upstream:build
+      - name: Assemble runtime closure
+        run: pnpm runtime:build
+      - name: Smoke test runtime
+        run: pnpm runtime:smoke
+      - name: Sign runtime pack
+        env:
+          DSH_STAR_RUNTIME_SIGNING_KEY_B64: ${{ secrets.DSH_STAR_RUNTIME_SIGNING_KEY_B64 }}
+        run: node scripts/sign-runtime.mjs runtime-dist/dsh-star-runtime.tar.gz runtime-dist/${{ matrix.asset }}
+      - name: Publish signed runtime pack
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_TAG: runtime-b150a551b8d4
+          ASSET: ${{ matrix.asset }}
+        run: |
+          gh release view "$RUNTIME_TAG" >/dev/null 2>&1 || gh release create "$RUNTIME_TAG" --title "DSH Star Runtime b150a551b8d4" --notes "Signed runtime packs for the pinned official DeepSeek Harness build."
+          gh release upload "$RUNTIME_TAG" "runtime-dist/$ASSET" "runtime-dist/$ASSET.sig" --clobber
