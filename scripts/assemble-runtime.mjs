@@ -171,6 +171,17 @@ if (deployedMarket.status !== 0) throw new Error(`Market deploy failed with ${de
 const marketTarget = join(harness, "node_modules/dsh-community-market");
 relativizeInternalLinks(marketDeploy, marketDeploy, realpathSync(marketPackage));
 renameSync(marketDeploy, marketTarget);
+if (process.platform === "win32") {
+  // The hoisted Windows deploy is already a complete, flat node_modules tree.
+  // Keeping pnpm's virtual store would archive a second copy of every package,
+  // and junction traversal can multiply that copy many times. The hoisted files
+  // remain valid after the store is removed because Node resolves dependencies
+  // from the flat ancestor node_modules directories.
+  for (const deployedRoot of [harness, desktopTarget, marketTarget]) {
+    rmSync(join(deployedRoot, "node_modules/.pnpm"), { recursive: true, force: true });
+    rmSync(join(deployedRoot, "node_modules/.modules.yaml"), { force: true });
+  }
+}
 mkdirSync(join(destination, "desktop"), { recursive: true });
 cpSync(join(desktopPackage, "cordis.patch.yml"), join(destination, "desktop/cordis.patch.yml"));
 
