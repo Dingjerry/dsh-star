@@ -25,7 +25,7 @@ function one(suffix) {
 }
 
 const mac = one("_macOS-arm64_updater.app.tar.gz");
-const windows = one("_Windows-x64_updater.nsis.zip");
+const windows = one("_Windows-x64_updater.exe");
 const payloads = [mac, windows];
 for (const payload of payloads) {
   if (!existsSync(`${payload}.sig`)) throw new Error(`missing updater signature for ${payload}`);

@@ -75,10 +75,10 @@ jobs:
           Copy-Item "src-tauri/target/release/dsh-star.exe" "src-tauri/target/release/bundle/portable/DSH Star/DSH Star.exe"
           $version = (Get-Content package.json | ConvertFrom-Json).version
           & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_light.zip" "src-tauri/target/release/bundle/portable/DSH Star/*"
-          $updater = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.nsis.zip" | Select-Object -First 1
+          $updater = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
           if (-not $updater) { throw "Tauri did not create the Windows updater payload" }
-          Copy-Item $updater.FullName "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.nsis.zip"
-          Copy-Item "$($updater.FullName).sig" "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.nsis.zip.sig"
+          Copy-Item $updater.FullName "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.exe"
+          Copy-Item "$($updater.FullName).sig" "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.exe.sig"
           $bytes = (Get-Item "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_light.zip").Length
           if ($bytes -ge 10485760) { throw "Light shell exceeds 10 MB: $bytes bytes" }
 
@@ -102,8 +102,8 @@ jobs:
           path: |
             src-tauri/target/release/bundle/*_updater.app.tar.gz
             src-tauri/target/release/bundle/*_updater.app.tar.gz.sig
-            src-tauri/target/release/bundle/*_updater.nsis.zip
-            src-tauri/target/release/bundle/*_updater.nsis.zip.sig
+            src-tauri/target/release/bundle/*_updater.exe
+            src-tauri/target/release/bundle/*_updater.exe.sig
 
   release:
     name: Publish signed update channel
@@ -140,4 +140,4 @@ jobs:
         run: |
           gh release view update-channel-stable >/dev/null 2>&1 || gh release create update-channel-stable --prerelease --target "$GITHUB_SHA" --title "DSH Star internal update channel" --notes "Machine-consumed signed updater payloads. End users should download from the versioned DSH Star release."
           for asset in $(gh release view update-channel-stable --json assets --jq '.assets[].name'); do gh release delete-asset update-channel-stable "$asset" --yes; done
-          gh release upload update-channel-stable release-input/*_updater.app.tar.gz release-input/*_updater.app.tar.gz.sig release-input/*_updater.nsis.zip release-input/*_updater.nsis.zip.sig release-input/latest.json
+          gh release upload update-channel-stable release-input/*_updater.app.tar.gz release-input/*_updater.app.tar.gz.sig release-input/*_updater.exe release-input/*_updater.exe.sig release-input/latest.json
