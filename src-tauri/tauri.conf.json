@@ -22,6 +22,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "category": "DeveloperTool",
     "shortDescription": "Desktop DeepSeek Harness",
     "longDescription": "基于 DeepSeek Harness 官方开源源码，使用 Tauri 2 与 Rust 封装的社区桌面版。",
