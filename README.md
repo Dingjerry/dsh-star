@@ -26,8 +26,9 @@ The project has a working native host, pinned upstream source, boot/recovery
 surface, first-party Star Settings, a sidebar Plugin Market, and a
 reproducible local runtime assembly. Rust directly supervises the single
 packaged Node + official Harness process. The closure passes an isolated Web UI
-and market-capability smoke test; signing, release automation, and signed updates remain future
-milestones.
+and market-capability smoke test. Signed lightweight-shell updates and gated,
+signed Harness runtime updates are implemented; platform signing/notarization
+remains a release milestone.
 
 ## Architecture
 

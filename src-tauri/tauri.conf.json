@@ -21,6 +21,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "macOS": {
       "signingIdentity": "-"
@@ -36,5 +37,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3QjZCMUY0MzVFQzFGNjEKUldSaEgrdzE5TEcySjNBREJJbytncmxWa1o5TWVFcDJkMTFzNUJ0NGR4TDhLd2dVaWFXYWxpUlgK",
+      "endpoints": [
+        "https://github.com/Dingjerry/dsh-star/releases/download/update-channel-stable/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

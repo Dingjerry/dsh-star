@@ -15,11 +15,12 @@
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "check": "node scripts/verify-upstream.mjs && cargo check --manifest-path src-tauri/Cargo.toml",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && node scripts/test-update-flow.mjs",
     "upstream:check": "node scripts/verify-upstream.mjs",
     "upstream:build": "pnpm --dir upstream/deepseek-harness run build:official",
     "runtime:build": "node scripts/assemble-runtime.mjs",
     "runtime:smoke": "node scripts/smoke-runtime.mjs",
+    "updates:manifest": "node scripts/generate-update-manifest.mjs",
     "package:windows-portable": "node scripts/package-windows-portable.mjs"
   }
 }

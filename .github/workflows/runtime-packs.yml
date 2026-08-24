@@ -51,8 +51,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RUNTIME_TAG: runtime-b150a551b8d4
           ASSET: ${{ matrix.asset }}
         run: |
-          gh release view "$RUNTIME_TAG" >/dev/null 2>&1 || gh release create "$RUNTIME_TAG" --title "DSH Star Runtime b150a551b8d4" --notes "Signed runtime packs for the pinned official DeepSeek Harness build."
+          commit=$(node -p "require('./upstream.json').commit")
+          tag=$(node -p "require('./upstream.json').tag")
+          RUNTIME_TAG="runtime-${commit:0:12}"
+          gh release view "$RUNTIME_TAG" >/dev/null 2>&1 || gh release create "$RUNTIME_TAG" --prerelease --title "DSH Star Runtime ${commit:0:12}" --notes "Signed runtime packs for official DeepSeek Harness $tag."
           gh release upload "$RUNTIME_TAG" "runtime-dist/$ASSET" "runtime-dist/$ASSET.sig" --clobber

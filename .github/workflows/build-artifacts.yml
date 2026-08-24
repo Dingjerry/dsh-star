@@ -2,12 +2,18 @@ name: Build release artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_update_channel:
+        description: Publish the signed internal update channel without creating a public release
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -20,9 +26,11 @@ jobs:
           - os: macos-latest
             artifact: DSH-Star-macOS-arm64-light
             build_args: --bundles app
+            updater_artifact: internal-updater-macOS-arm64
           - os: windows-latest
             artifact: DSH-Star-Windows-x64-light
-            build_args: --no-bundle
+            build_args: --bundles nsis
+            updater_artifact: internal-updater-Windows-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +49,9 @@ jobs:
       - name: Install Star dependencies
         run: pnpm install --frozen-lockfile
       - name: Build desktop bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm dlx @tauri-apps/cli@^2 build ${{ matrix.build_args }}
 
       - name: Verify macOS app signature
@@ -50,8 +61,11 @@ jobs:
       - name: Package portable macOS app
         if: runner.os == 'macOS'
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/DSH Star.app" "src-tauri/target/release/bundle/DSH-Star_0.1.0_macOS-arm64_light.app.zip"
-          bytes=$(stat -f%z "src-tauri/target/release/bundle/DSH-Star_0.1.0_macOS-arm64_light.app.zip")
+          version=$(node -p "require('./package.json').version")
+          ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/release/bundle/macos/DSH Star.app" "src-tauri/target/release/bundle/DSH-Star_${version}_macOS-arm64_light.app.zip"
+          cp "src-tauri/target/release/bundle/macos/DSH Star.app.tar.gz" "src-tauri/target/release/bundle/DSH-Star_${version}_macOS-arm64_updater.app.tar.gz"
+          cp "src-tauri/target/release/bundle/macos/DSH Star.app.tar.gz.sig" "src-tauri/target/release/bundle/DSH-Star_${version}_macOS-arm64_updater.app.tar.gz.sig"
+          bytes=$(stat -f%z "src-tauri/target/release/bundle/DSH-Star_${version}_macOS-arm64_light.app.zip")
           test "$bytes" -lt 10485760 || { echo "Light shell exceeds 10 MB: $bytes bytes"; exit 1; }
       - name: Package portable Windows app
         if: runner.os == 'Windows'
@@ -59,8 +73,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force "src-tauri/target/release/bundle/portable/DSH Star" | Out-Null
           Copy-Item "src-tauri/target/release/dsh-star.exe" "src-tauri/target/release/bundle/portable/DSH Star/DSH Star.exe"
-          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "src-tauri/target/release/bundle/DSH-Star_0.1.0_Windows-x64_light.zip" "src-tauri/target/release/bundle/portable/DSH Star/*"
-          $bytes = (Get-Item "src-tauri/target/release/bundle/DSH-Star_0.1.0_Windows-x64_light.zip").Length
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_light.zip" "src-tauri/target/release/bundle/portable/DSH Star/*"
+          $updater = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.nsis.zip" | Select-Object -First 1
+          if (-not $updater) { throw "Tauri did not create the Windows updater payload" }
+          Copy-Item $updater.FullName "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.nsis.zip"
+          Copy-Item "$($updater.FullName).sig" "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.nsis.zip.sig"
+          $bytes = (Get-Item "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_light.zip").Length
           if ($bytes -ge 10485760) { throw "Light shell exceeds 10 MB: $bytes bytes" }
 
       - name: Upload light shell
@@ -72,3 +91,53 @@ jobs:
           path: |
             src-tauri/target/release/bundle/*_light.app.zip
             src-tauri/target/release/bundle/*_light.zip
+
+      - name: Upload internal signed updater payload
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_update_channel == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.updater_artifact }}
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            src-tauri/target/release/bundle/*_updater.app.tar.gz
+            src-tauri/target/release/bundle/*_updater.app.tar.gz.sig
+            src-tauri/target/release/bundle/*_updater.nsis.zip
+            src-tauri/target/release/bundle/*_updater.nsis.zip.sig
+
+  release:
+    name: Publish signed update channel
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_update_channel == true
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-input
+          merge-multiple: true
+      - name: Validate version and create update manifest
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "v$version" = "${GITHUB_REF_NAME}" || { echo "Tag ${GITHUB_REF_NAME} does not match package version $version"; exit 1; }
+          fi
+          node scripts/generate-update-manifest.mjs release-input Dingjerry/dsh-star update-channel-stable "$version" release-input/latest.json
+      - name: Publish two user downloads
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "DSH Star v$version" --notes "DSH Star lightweight Tauri desktop shells for macOS and Windows. The signed Harness runtime is installed separately on first use."
+          gh release upload "$GITHUB_REF_NAME" release-input/*_light.app.zip release-input/*_light.zip --clobber
+      - name: Publish internal update channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view update-channel-stable >/dev/null 2>&1 || gh release create update-channel-stable --prerelease --target "$GITHUB_SHA" --title "DSH Star internal update channel" --notes "Machine-consumed signed updater payloads. End users should download from the versioned DSH Star release."
+          for asset in $(gh release view update-channel-stable --json assets --jq '.assets[].name'); do gh release delete-asset update-channel-stable "$asset" --yes; done
+          gh release upload update-channel-stable release-input/*_updater.app.tar.gz release-input/*_updater.app.tar.gz.sig release-input/*_updater.nsis.zip release-input/*_updater.nsis.zip.sig release-input/latest.json

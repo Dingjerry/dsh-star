@@ -1,0 +1,11 @@
+[[permission]]
+identifier = "allow-updates"
+description = "Check, download, verify, activate, and restart into signed DSH Star updates."
+commands.allow = [
+  "check_updates",
+  "update_status",
+  "download_app_update",
+  "download_harness_update",
+  "apply_app_update",
+  "restart_after_update",
+]

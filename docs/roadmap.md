@@ -39,9 +39,12 @@
 
 ## M3 — Updates
 
-- signed Tauri application updates that include a tested Harness runtime
+- [x] signed Tauri lightweight-shell update channel with background download
+  and confirmed restart
+- [x] official Harness release checks with compatible signed-runtime gating
+- [x] atomic runtime activation, isolated health check, retained rollback, and
+  host/runtime protocol compatibility
 - release automation that detects upstream tags and opens pinned upgrade changes
-- optional signed runtime packs only after atomic activation, health checks,
-  retained rollback, and host/runtime compatibility checks are implemented
+- Windows runtime-pack reproducibility and code-signing validation
 
 Harness `master` is never consumed directly by a released application.

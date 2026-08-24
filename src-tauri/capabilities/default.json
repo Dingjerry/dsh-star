@@ -8,6 +8,7 @@
     "allow-desktop-status",
     "allow-set-launch-at-login",
     "allow-set-close-behavior",
-    "allow-close-window-action"
+    "allow-close-window-action",
+    "allow-updates"
   ]
 }

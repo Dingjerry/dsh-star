@@ -13,7 +13,9 @@ application and runtime identity, active profile, single-process architecture,
 launch-at-login, close behavior, diagnostics, and update availability. Login
 launch is backed by the native Tauri autostart integration, close behavior is
 persisted by Rust, and diagnostics are read from the live process supervisor.
-The update row explicitly reports unavailable until signed updates exist.
+Separate update rows report the DSH Star shell channel and the latest official
+DeepSeek Harness release. Downloads expose live progress and never restart
+without confirmation.
 The intended groups are:
 
 - **Desktop** — application/runtime versions, launch behavior, close behavior,
@@ -37,15 +39,16 @@ Star does not replace the official Settings shell or sidebar.
 
 ## Native bridge
 
-The Harness page is loopback HTTP content. DSH Star exposes only four bounded
-Tauri commands to its first-party settings plugin: read desktop status, change
-login launch, persist close behavior, and complete a user-confirmed window
-close action. None returns native paths, environment variables, secrets, or
+The Harness page is loopback HTTP content. DSH Star exposes bounded Tauri
+commands to read desktop status, change login launch, persist close behavior,
+complete a user-confirmed window close action, and operate the signed update
+state machine. None returns native paths, environment variables, secrets, or
 credentials.
 
 The Rust host validates all argument shapes and remains authoritative for these
-native actions. Online update and profile-switch commands do not exist yet, so
-the UI cannot imply that either operation succeeded.
+native actions. Profile switching remains unavailable; update commands accept
+no URLs or file paths from Web content and can only consume the configured
+signed channels.
 
 ## Market safety
 

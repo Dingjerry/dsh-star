@@ -1,5 +1,9 @@
 #[cfg(not(debug_assertions))]
 use std::io::{Read, Write};
+#[cfg(not(debug_assertions))]
+use std::sync::mpsc;
+#[cfg(not(debug_assertions))]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, path::Path};
 use std::{
     io::{BufRead, BufReader},
@@ -14,6 +18,7 @@ use std::{
 };
 use tauri::{webview::PageLoadEvent, Manager, WebviewWindow};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[derive(Default)]
 struct AppState {
@@ -21,6 +26,75 @@ struct AppState {
     revealed: AtomicBool,
     closing: AtomicBool,
     close_behavior: Mutex<CloseBehavior>,
+    checked_app_update: Mutex<Option<Update>>,
+    pending_app_update: Mutex<Option<PendingAppUpdate>>,
+    harness_candidate: Mutex<Option<HarnessCandidate>>,
+    update_progress: Mutex<UpdateProgress>,
+}
+
+struct PendingAppUpdate {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone)]
+#[cfg_attr(debug_assertions, allow(dead_code))]
+struct HarnessCandidate {
+    tag: String,
+    commit: String,
+    release: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    phase: String,
+    kind: Option<String>,
+    downloaded: u64,
+    total: Option<u64>,
+    message: String,
+    restart_required: bool,
+}
+
+impl Default for UpdateProgress {
+    fn default() -> Self {
+        Self {
+            phase: "idle".into(),
+            kind: None,
+            downloaded: 0,
+            total: None,
+            message: "尚未检查更新。".into(),
+            restart_required: false,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheck {
+    app: AppUpdateInfo,
+    harness: HarnessUpdateInfo,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateInfo {
+    current_version: String,
+    latest_version: Option<String>,
+    available: bool,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HarnessUpdateInfo {
+    current_tag: String,
+    current_commit: String,
+    latest_tag: Option<String>,
+    latest_commit: Option<String>,
+    official_update_available: bool,
+    compatible_runtime_available: bool,
+    message: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -52,6 +126,9 @@ fn load_close_behavior(app: &tauri::AppHandle) -> CloseBehavior {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopStatus {
+    app_version: &'static str,
+    harness_tag: String,
+    harness_commit: String,
     launch_at_login: bool,
     close_behavior: &'static str,
     runtime_running: bool,
@@ -222,13 +299,17 @@ fn desktop_status(app: tauri::AppHandle) -> Result<DesktopStatus, String> {
         .autolaunch()
         .is_enabled()
         .map_err(|error| error.to_string())?;
+    let (harness_tag, harness_commit) = current_harness_identity(&app)?;
     Ok(DesktopStatus {
+        app_version: env!("CARGO_PKG_VERSION"),
+        harness_tag,
+        harness_commit,
         launch_at_login,
         close_behavior,
         runtime_running,
         profile: "web",
         loopback_only: true,
-        updates_enabled: false,
+        updates_enabled: true,
     })
 }
 
@@ -278,6 +359,334 @@ fn close_window_action(app: tauri::AppHandle, quit: bool) {
     }
 }
 
+fn embedded_upstream() -> Result<UpstreamLock, String> {
+    serde_json::from_str(include_str!("../../upstream.json"))
+        .map_err(|error| format!("invalid embedded upstream lock: {error}"))
+}
+
+fn replace_update_progress(app: &tauri::AppHandle, progress: UpdateProgress) {
+    if let Ok(mut state) = app.state::<AppState>().update_progress.lock() {
+        *state = progress;
+    }
+}
+
+fn update_progress_message(
+    app: &tauri::AppHandle,
+    phase: &str,
+    kind: Option<&str>,
+    message: impl Into<String>,
+) {
+    replace_update_progress(
+        app,
+        UpdateProgress {
+            phase: phase.into(),
+            kind: kind.map(str::to_string),
+            downloaded: 0,
+            total: None,
+            message: message.into(),
+            restart_required: false,
+        },
+    );
+}
+
+#[tauri::command]
+fn update_status(app: tauri::AppHandle) -> Result<UpdateProgress, String> {
+    app.state::<AppState>()
+        .update_progress
+        .lock()
+        .map(|value| value.clone())
+        .map_err(|_| "update state poisoned".into())
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubTag {
+    name: String,
+    commit: GitHubCommit,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommit {
+    sha: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubRuntimeRelease {
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAsset {
+    name: String,
+}
+
+fn resolve_latest_harness(
+    releases: &[GitHubRelease],
+    tags: &[GitHubTag],
+) -> Result<(String, String), String> {
+    let release = releases
+        .iter()
+        .find(|release| !release.draft && release.tag_name.starts_with("dsh-v"))
+        .ok_or_else(|| "DeepSeek Harness 暂无可识别的官方版本。".to_string())?;
+    let commit = tags
+        .iter()
+        .find(|tag| tag.name == release.tag_name)
+        .map(|tag| tag.commit.sha.clone())
+        .ok_or_else(|| "无法解析 DeepSeek Harness 官方版本提交。".to_string())?;
+    if commit.len() < 12 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("DeepSeek Harness 官方提交格式无效。".into());
+    }
+    Ok((release.tag_name.clone(), commit))
+}
+
+fn github_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<T, String> {
+    client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("GitHub 检查失败：{error}"))?
+        .json()
+        .map_err(|error| format!("GitHub 返回的数据无效：{error}"))
+}
+
+fn current_harness_identity(app: &tauri::AppHandle) -> Result<(String, String), String> {
+    let lock = embedded_upstream()?;
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        Ok((lock.tag, lock.commit))
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let metadata = managed_runtime(app)
+            .ok()
+            .and_then(|root| fs::read_to_string(root.join("runtime.json")).ok())
+            .and_then(|value| serde_json::from_str::<ManagedManifest>(&value).ok());
+        Ok(metadata
+            .map(|value| (value.harness.tag, value.harness.commit))
+            .unwrap_or((lock.tag, lock.commit)))
+    }
+}
+
+fn check_harness_update(app: &tauri::AppHandle) -> Result<HarnessUpdateInfo, String> {
+    let (current_tag, current_commit) = current_harness_identity(app)?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("DSH-Star/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("无法初始化版本检查：{error}"))?;
+    let releases: Vec<GitHubRelease> = github_json(
+        &client,
+        "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=20",
+    )?;
+    let tags: Vec<GitHubTag> = github_json(
+        &client,
+        "https://api.github.com/repos/deepseek-ai/deepseek-harness/tags?per_page=50",
+    )?;
+    let (latest_tag, latest_commit) = resolve_latest_harness(&releases, &tags)?;
+    let official_update_available = latest_commit != current_commit;
+    let runtime_release = format!("runtime-{}", &latest_commit[..12]);
+    let asset = runtime_asset_name().ok();
+    let compatible_runtime_available = if official_update_available {
+        let url = format!(
+            "https://api.github.com/repos/Dingjerry/dsh-star/releases/tags/{runtime_release}"
+        );
+        github_json::<GitHubRuntimeRelease>(&client, &url)
+            .ok()
+            .is_some_and(|runtime| {
+                asset.as_ref().is_some_and(|name| {
+                    runtime.assets.iter().any(|item| item.name == *name)
+                        && runtime
+                            .assets
+                            .iter()
+                            .any(|item| item.name == format!("{name}.sig"))
+                })
+            })
+    } else {
+        false
+    };
+    let candidate = compatible_runtime_available.then(|| HarnessCandidate {
+        tag: latest_tag.clone(),
+        commit: latest_commit.clone(),
+        release: runtime_release,
+    });
+    *app.state::<AppState>()
+        .harness_candidate
+        .lock()
+        .map_err(|_| "update state poisoned")? = candidate;
+    let message = if !official_update_available {
+        "官方 DeepSeek Harness 已是最新版本。"
+    } else if compatible_runtime_available {
+        "已发现经过 DSH Star 验证和签名的 Harness 更新。"
+    } else {
+        "官方 Harness 有新版本，正在等待 DSH Star 完成兼容性验证。"
+    };
+    Ok(HarnessUpdateInfo {
+        current_tag,
+        current_commit,
+        latest_tag: Some(latest_tag),
+        latest_commit: Some(latest_commit),
+        official_update_available,
+        compatible_runtime_available,
+        message: message.into(),
+    })
+}
+
+#[tauri::command]
+async fn check_updates(app: tauri::AppHandle) -> Result<UpdateCheck, String> {
+    update_progress_message(&app, "checking", None, "正在检查 DSH Star 和 Harness 更新…");
+    let app_update = match app.updater().map_err(|error| error.to_string()) {
+        Ok(updater) => match updater.check().await {
+            Ok(update) => {
+                *app.state::<AppState>()
+                    .checked_app_update
+                    .lock()
+                    .map_err(|_| "update state poisoned")? = update.clone();
+                match update {
+                    Some(update) => AppUpdateInfo {
+                        current_version: update.current_version,
+                        latest_version: Some(update.version),
+                        available: true,
+                        message: "发现新的 DSH Star 轻量壳版本。".into(),
+                    },
+                    None => AppUpdateInfo {
+                        current_version: env!("CARGO_PKG_VERSION").into(),
+                        latest_version: None,
+                        available: false,
+                        message: "DSH Star 已是最新版本。".into(),
+                    },
+                }
+            }
+            Err(error) => AppUpdateInfo {
+                current_version: env!("CARGO_PKG_VERSION").into(),
+                latest_version: None,
+                available: false,
+                message: format!("暂时无法检查 DSH Star 更新：{error}"),
+            },
+        },
+        Err(error) => AppUpdateInfo {
+            current_version: env!("CARGO_PKG_VERSION").into(),
+            latest_version: None,
+            available: false,
+            message: format!("DSH Star 更新器不可用：{error}"),
+        },
+    };
+    let harness_app = app.clone();
+    let harness = tauri::async_runtime::spawn_blocking(move || check_harness_update(&harness_app))
+        .await
+        .map_err(|error| format!("Harness 版本检查任务失败：{error}"))
+        .and_then(|result| result)
+        .unwrap_or_else(|message| {
+            let lock = embedded_upstream().ok();
+            HarnessUpdateInfo {
+                current_tag: lock
+                    .as_ref()
+                    .map(|value| value.tag.clone())
+                    .unwrap_or_default(),
+                current_commit: lock.map(|value| value.commit).unwrap_or_default(),
+                latest_tag: None,
+                latest_commit: None,
+                official_update_available: false,
+                compatible_runtime_available: false,
+                message,
+            }
+        });
+    update_progress_message(&app, "idle", None, "更新检查完成。");
+    Ok(UpdateCheck {
+        app: app_update,
+        harness,
+    })
+}
+
+#[tauri::command]
+async fn download_app_update(app: tauri::AppHandle) -> Result<UpdateProgress, String> {
+    let update = app
+        .state::<AppState>()
+        .checked_app_update
+        .lock()
+        .map_err(|_| "update state poisoned")?
+        .clone()
+        .ok_or_else(|| "没有可下载的 DSH Star 更新，请先检查更新。".to_string())?;
+    update_progress_message(
+        &app,
+        "downloading",
+        Some("app"),
+        "正在后台下载 DSH Star 更新…",
+    );
+    let progress_app = app.clone();
+    let bytes = update
+        .download(
+            move |chunk, total| {
+                if let Ok(mut progress) = progress_app.state::<AppState>().update_progress.lock() {
+                    progress.downloaded = progress.downloaded.saturating_add(chunk as u64);
+                    progress.total = total;
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| {
+            update_progress_message(&app, "error", Some("app"), format!("更新下载失败：{error}"));
+            error.to_string()
+        })?;
+    *app.state::<AppState>()
+        .pending_app_update
+        .lock()
+        .map_err(|_| "update state poisoned")? = Some(PendingAppUpdate { update, bytes });
+    let (downloaded, total) = app
+        .state::<AppState>()
+        .update_progress
+        .lock()
+        .map(|value| (value.downloaded, value.total))
+        .unwrap_or((0, None));
+    let progress = UpdateProgress {
+        phase: "ready".into(),
+        kind: Some("app".into()),
+        downloaded,
+        total,
+        message: "DSH Star 更新已下载并通过签名验证，重启后完成安装。".into(),
+        restart_required: true,
+    };
+    replace_update_progress(&app, progress.clone());
+    Ok(progress)
+}
+
+#[tauri::command]
+fn apply_app_update(app: tauri::AppHandle) -> Result<(), String> {
+    let pending = app
+        .state::<AppState>()
+        .pending_app_update
+        .lock()
+        .map_err(|_| "update state poisoned")?
+        .take()
+        .ok_or_else(|| "没有已下载的 DSH Star 更新。".to_string())?;
+    update_progress_message(&app, "installing", Some("app"), "正在安装 DSH Star 更新…");
+    stop_runtime(&app);
+    if let Err(error) = pending.update.install(&pending.bytes) {
+        let _ = start_runtime(&app);
+        update_progress_message(&app, "error", Some("app"), format!("更新安装失败：{error}"));
+        return Err(error.to_string());
+    }
+    app.restart()
+}
+
+#[tauri::command]
+fn restart_after_update(app: tauri::AppHandle) {
+    stop_runtime(&app);
+    app.restart();
+}
+
 #[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 #[derive(serde::Deserialize)]
 struct BundleManifest {
@@ -285,16 +694,21 @@ struct BundleManifest {
     desktop: BundleDesktop,
 }
 
-#[cfg(not(debug_assertions))]
 #[derive(serde::Deserialize)]
 struct UpstreamLock {
+    #[cfg_attr(debug_assertions, allow(dead_code))]
+    repository: String,
+    tag: String,
     commit: String,
 }
 
 #[cfg(not(debug_assertions))]
 #[derive(serde::Deserialize)]
 struct ManagedManifest {
+    protocol: String,
     harness: ManagedHarness,
+    #[serde(default)]
+    host: Option<ManagedHost>,
     platform: String,
     architecture: String,
 }
@@ -302,7 +716,16 @@ struct ManagedManifest {
 #[cfg(not(debug_assertions))]
 #[derive(serde::Deserialize)]
 struct ManagedHarness {
+    repository: String,
+    tag: String,
     commit: String,
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedHost {
+    min_version: String,
 }
 
 #[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
@@ -371,14 +794,72 @@ fn runtime_matches_platform(manifest: &ManagedManifest) -> bool {
 }
 
 #[cfg(not(debug_assertions))]
-fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
-        .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
-    let base = app
-        .path()
+fn runtime_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("runtime");
+        .map(|path| path.join("runtime"))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(debug_assertions))]
+fn runtime_metadata_compatible(metadata: &ManagedManifest, lock: &UpstreamLock) -> bool {
+    if metadata.protocol != "dsh-star/1"
+        || metadata.harness.repository != lock.repository
+        || !runtime_matches_platform(metadata)
+    {
+        return false;
+    }
+    match metadata.host.as_ref() {
+        Some(host) => {
+            let Ok(minimum) = semver::Version::parse(&host.min_version) else {
+                return false;
+            };
+            let Ok(current) = semver::Version::parse(env!("CARGO_PKG_VERSION")) else {
+                return false;
+            };
+            current >= minimum
+        }
+        None => metadata.harness.commit == lock.commit,
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn runtime_from_pointer(base: &Path, pointer: &str, lock: &UpstreamLock) -> Option<PathBuf> {
+    let name = fs::read_to_string(base.join(pointer)).ok()?;
+    let name = name.trim();
+    if name.is_empty()
+        || Path::new(name).components().count() != 1
+        || Path::new(name).file_name().and_then(|value| value.to_str()) != Some(name)
+    {
+        return None;
+    }
+    let root = base.join(name);
+    let manifest = fs::read_to_string(root.join("runtime.json")).ok()?;
+    let metadata = serde_json::from_str::<ManagedManifest>(&manifest).ok()?;
+    let verified_update = metadata.harness.commit == lock.commit
+        || fs::read_to_string(root.join(".verified-digest")).is_ok_and(|digest| {
+            digest.trim().len() == 64 && digest.trim().bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+    (verified_update
+        && runtime_metadata_compatible(&metadata, lock)
+        && validate_runtime(&root, &manifest))
+    .then_some(root)
+}
+
+#[cfg(not(debug_assertions))]
+fn write_runtime_pointer(base: &Path, pointer: &str, value: &str) -> Result<(), String> {
+    let temporary = base.join(format!(".{pointer}-{}.tmp", std::process::id()));
+    fs::write(&temporary, value).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, base.join(pointer)).map_err(|error| error.to_string())
+}
+
+#[cfg(not(debug_assertions))]
+fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let lock = embedded_upstream()?;
+    let base = runtime_base(app)?;
+    if let Some(active) = runtime_from_pointer(&base, "active-runtime", &lock) {
+        return Ok(active);
+    }
     let entries =
         fs::read_dir(&base).map_err(|_| "未安装 DSH Star 运行时，请点击安装。".to_string())?;
     let mut entries = entries.flatten().collect::<Vec<_>>();
@@ -402,6 +883,7 @@ fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             continue;
         };
         if metadata.harness.commit == lock.commit
+            && runtime_metadata_compatible(&metadata, &lock)
             && runtime_matches_platform(&metadata)
             && validate_runtime(&root, &manifest)
         {
@@ -411,7 +893,6 @@ fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Err("未找到与当前版本匹配的受管理运行时，请点击安装。".into())
 }
 
-#[cfg(not(debug_assertions))]
 fn runtime_asset_name() -> Result<&'static str, String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Ok("dsh-star-runtime-macos-arm64.tar.gz"),
@@ -426,6 +907,19 @@ fn runtime_asset_name() -> Result<&'static str, String> {
 
 #[cfg(not(debug_assertions))]
 fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let lock = embedded_upstream()?;
+    let release = format!("runtime-{}", &lock.commit[..12]);
+    install_signed_runtime(app, &release, &lock.tag, &lock.commit, false)
+}
+
+#[cfg(not(debug_assertions))]
+fn install_signed_runtime(
+    app: &tauri::AppHandle,
+    release: &str,
+    expected_tag: &str,
+    expected_commit: &str,
+    is_update: bool,
+) -> Result<PathBuf, String> {
     use ed25519_dalek::{Signature, VerifyingKey};
     use sha2::{Digest, Sha256};
 
@@ -435,17 +929,10 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
         0xfb, 0xd9,
     ];
     const MAX_RUNTIME_BYTES: u64 = 1024 * 1024 * 1024;
-    const RUNTIME_RELEASE: &str = "runtime-b150a551b8d4";
 
     let asset = runtime_asset_name()?;
-    let url = format!(
-        "https://github.com/Dingjerry/dsh-star/releases/download/{RUNTIME_RELEASE}/{asset}"
-    );
-    let base = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("runtime");
+    let url = format!("https://github.com/Dingjerry/dsh-star/releases/download/{release}/{asset}");
+    let base = runtime_base(app)?;
     fs::create_dir_all(&base).map_err(|error| error.to_string())?;
     let download = base.join(format!(".{asset}-{}.download", std::process::id()));
     let staging = base.join(format!(".runtime-{}.staging", std::process::id()));
@@ -476,9 +963,29 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
     {
         return Err("运行时包超过安全体积限制。".into());
     }
+    let total = response.content_length();
+    let mut response = response.take(MAX_RUNTIME_BYTES + 1);
     let mut archive = fs::File::create(&download).map_err(|error| error.to_string())?;
-    let copied = std::io::copy(&mut response.take(MAX_RUNTIME_BYTES + 1), &mut archive)
-        .map_err(|error| format!("保存运行时失败：{error}"))?;
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = response
+            .read(&mut buffer)
+            .map_err(|error| format!("保存运行时失败：{error}"))?;
+        if count == 0 {
+            break;
+        }
+        archive
+            .write_all(&buffer[..count])
+            .map_err(|error| format!("保存运行时失败：{error}"))?;
+        copied = copied.saturating_add(count as u64);
+        if is_update {
+            if let Ok(mut progress) = app.state::<AppState>().update_progress.lock() {
+                progress.downloaded = copied;
+                progress.total = total;
+            }
+        }
+    }
     archive.flush().map_err(|error| error.to_string())?;
     if copied > MAX_RUNTIME_BYTES {
         let _ = fs::remove_file(&download);
@@ -538,9 +1045,13 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
         .map_err(|error| format!("运行时清单缺失：{error}"))?;
     let metadata: ManagedManifest =
         serde_json::from_str(&manifest).map_err(|error| format!("运行时清单无效：{error}"))?;
-    let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
-        .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
-    if metadata.harness.commit != lock.commit
+    let lock = embedded_upstream()?;
+    if metadata.harness.commit != expected_commit
+        || metadata.harness.tag != expected_tag
+        || metadata.protocol != "dsh-star/1"
+        || metadata.harness.repository != lock.repository
+        || (is_update && metadata.host.is_none())
+        || !runtime_metadata_compatible(&metadata, &lock)
         || !runtime_matches_platform(&metadata)
         || !validate_runtime(&staging, &manifest)
     {
@@ -549,12 +1060,18 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
         return Err("运行时与当前 DSH Star 版本不匹配。".into());
     }
     let digest_hex = format!("{digest:x}");
+    fs::write(staging.join(".verified-digest"), &digest_hex)
+        .map_err(|error| format!("无法保存运行时验证标记：{error}"))?;
     let destination = base.join(format!(
         "{}-{}-signed",
         metadata.harness.commit,
         &digest_hex[..12]
     ));
     if validate_runtime(&destination, &manifest) {
+        if is_update {
+            fs::write(destination.join(".verified-digest"), &digest_hex)
+                .map_err(|error| format!("无法保存运行时验证标记：{error}"))?;
+        }
         let _ = fs::remove_dir_all(&staging);
         let _ = fs::remove_file(&download);
         return Ok(destination);
@@ -568,6 +1085,221 @@ fn install_downloaded_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String>
     })?;
     let _ = fs::remove_file(&download);
     Ok(destination)
+}
+
+#[cfg(not(debug_assertions))]
+fn terminate_health_child(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(debug_assertions))]
+fn health_check_runtime(app: &tauri::AppHandle, runtime: &Path) -> Result<(), String> {
+    let node = runtime
+        .join("node/bin")
+        .join(if cfg!(windows) { "node.exe" } else { "node" });
+    let harness = runtime.join("harness");
+    let cli = harness.join("lib/bin.js");
+    let patch = runtime.join("desktop/cordis.patch.yml");
+    let desktop = harness.join("node_modules/dsh-star-desktop");
+    let market = harness.join("node_modules/dsh-community-market");
+    let health_home = runtime_base(app)?.join(format!(
+        ".health-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    if health_home.exists() {
+        fs::remove_dir_all(&health_home).map_err(|error| error.to_string())?;
+    }
+    fs::create_dir_all(&health_home).map_err(|error| error.to_string())?;
+    install_profile_plugin(&health_home, "dsh-star-desktop", &desktop)?;
+    install_profile_plugin(&health_home, "dsh-community-market", &market)?;
+    let mut command = Command::new(node);
+    command
+        .args([cli.as_os_str(), "web".as_ref(), "--patch".as_ref()])
+        .arg(patch)
+        .args(["--port", "0", "--no-open"])
+        .env("DSH_HOME", &health_home)
+        .env("DSH_STAR_PROFILE", "web")
+        .current_dir(harness)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("无法启动 Harness 健康检查：{error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Harness 健康检查没有输出。".to_string())?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(url) = harness_url(&line) {
+                let _ = sender.send(url);
+                return;
+            }
+        }
+    });
+    let result = receiver
+        .recv_timeout(Duration::from_secs(45))
+        .map_err(|_| "Harness 更新未能在 45 秒内通过健康检查。".to_string())
+        .and_then(|url| {
+            reqwest::blocking::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|error| error.to_string())?
+                .get(url)
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .map(|_| ())
+                .map_err(|error| format!("Harness 健康检查页面不可用：{error}"))
+        });
+    terminate_health_child(&mut child);
+    let _ = fs::remove_dir_all(&health_home);
+    result
+}
+
+#[cfg(not(debug_assertions))]
+fn activate_runtime(app: &tauri::AppHandle, runtime: &Path) -> Result<(), String> {
+    let base = runtime_base(app)?;
+    let name = runtime
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "运行时目录名称无效。".to_string())?;
+    let previous = managed_runtime(app)
+        .ok()
+        .and_then(|path| path.file_name().map(|value| value.to_owned()))
+        .and_then(|value| value.to_str().map(str::to_string));
+    if let Some(previous) = previous.filter(|previous| previous != name) {
+        write_runtime_pointer(&base, "previous-runtime", &previous)?;
+    }
+    write_runtime_pointer(&base, "active-runtime", name)?;
+    write_runtime_pointer(&base, "pending-runtime", name)
+}
+
+#[cfg(not(debug_assertions))]
+fn rollback_pending_runtime(app: &tauri::AppHandle) -> Result<bool, String> {
+    let base = runtime_base(app)?;
+    if !base.join("pending-runtime").is_file() {
+        return Ok(false);
+    }
+    if let Ok(previous) = fs::read_to_string(base.join("previous-runtime")) {
+        write_runtime_pointer(&base, "active-runtime", previous.trim())?;
+    } else {
+        let _ = fs::remove_file(base.join("active-runtime"));
+    }
+    fs::remove_file(base.join("pending-runtime")).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[cfg(not(debug_assertions))]
+fn confirm_runtime_health(app: &tauri::AppHandle) {
+    if let Ok(base) = runtime_base(app) {
+        let _ = fs::remove_file(base.join("pending-runtime"));
+    }
+}
+
+#[tauri::command]
+async fn download_harness_update(app: tauri::AppHandle) -> Result<UpdateProgress, String> {
+    let candidate = app
+        .state::<AppState>()
+        .harness_candidate
+        .lock()
+        .map_err(|_| "update state poisoned")?
+        .clone()
+        .ok_or_else(|| "没有可安装的兼容 Harness 更新，请先检查更新。".to_string())?;
+    update_progress_message(
+        &app,
+        "downloading",
+        Some("harness"),
+        "正在后台下载并验证 Harness 运行时…",
+    );
+    #[cfg(debug_assertions)]
+    let result: Result<(), String> = {
+        let _ = candidate;
+        Err("开发构建不安装在线 Harness 运行时。".into())
+    };
+    #[cfg(not(debug_assertions))]
+    let result = {
+        let task_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let runtime = install_signed_runtime(
+                &task_app,
+                &candidate.release,
+                &candidate.tag,
+                &candidate.commit,
+                true,
+            )?;
+            update_progress_message(
+                &task_app,
+                "verifying",
+                Some("harness"),
+                "正在启动隔离的 Harness 健康检查…",
+            );
+            health_check_runtime(&task_app, &runtime)?;
+            activate_runtime(&task_app, &runtime)
+        })
+        .await
+        .map_err(|error| format!("Harness 更新任务失败：{error}"))
+        .and_then(|result| result)
+    };
+    if let Err(error) = result {
+        update_progress_message(
+            &app,
+            "error",
+            Some("harness"),
+            format!("Harness 更新失败：{error}"),
+        );
+        return Err(error);
+    }
+    let progress = UpdateProgress {
+        phase: "ready".into(),
+        kind: Some("harness".into()),
+        downloaded: app
+            .state::<AppState>()
+            .update_progress
+            .lock()
+            .map(|value| value.downloaded)
+            .unwrap_or(0),
+        total: app
+            .state::<AppState>()
+            .update_progress
+            .lock()
+            .ok()
+            .and_then(|value| value.total),
+        message: "Harness 更新已验证并激活，重启后进入新版本。".into(),
+        restart_required: true,
+    };
+    replace_update_progress(&app, progress.clone());
+    Ok(progress)
 }
 
 #[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
@@ -924,6 +1656,18 @@ fn start_runtime(app: &tauri::AppHandle) -> Result<(), String> {
                         let _ = fs::remove_file(path);
                     }
                 }
+                #[cfg(not(debug_assertions))]
+                if !requested_restart && rollback_pending_runtime(&reaper_app).unwrap_or(false) {
+                    slot.take();
+                    drop(slot);
+                    if let Err(error) = start_runtime(&reaper_app) {
+                        reveal_recovery(
+                            &reaper_app,
+                            &format!("Harness 更新回滚后仍无法启动：{error}"),
+                        );
+                    }
+                    return;
+                }
                 if let Some(window) = reaper_app.get_webview_window("main") {
                     let message = if status.success() {
                         "Harness exited before the Web page became ready."
@@ -993,6 +1737,7 @@ pub fn run() {
                 .app_name("DSH Star")
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             let state = app.state::<AppState>();
             if state.revealed.load(Ordering::Acquire) {
@@ -1009,7 +1754,13 @@ pub fn run() {
             install_runtime_dependencies,
             set_launch_at_login,
             set_close_behavior,
-            close_window_action
+            close_window_action,
+            check_updates,
+            update_status,
+            download_app_update,
+            download_harness_update,
+            apply_app_update,
+            restart_after_update
         ])
         .on_window_event(|window, event| {
             let tauri::WindowEvent::CloseRequested { api, .. } = event else {
@@ -1043,6 +1794,8 @@ pub fn run() {
             }
             let state = webview.app_handle().state::<AppState>();
             state.revealed.store(true, Ordering::Release);
+            #[cfg(not(debug_assertions))]
+            confirm_runtime_health(webview.app_handle());
             let window = webview.window();
             let _ = window.set_title(concat!("DSH Star · v", env!("CARGO_PKG_VERSION")));
             let _ = window.show();
@@ -1063,7 +1816,17 @@ pub fn run() {
             let signal_app = app.handle().clone();
             ctrlc::set_handler(move || signal_app.exit(0))
                 .map_err(|error| format!("failed to install signal handler: {error}"))?;
-            if let Err(error) = start_runtime(app.handle()) {
+            #[allow(unused_mut)]
+            if let Err(mut error) = start_runtime(app.handle()) {
+                #[cfg(not(debug_assertions))]
+                if rollback_pending_runtime(app.handle()).unwrap_or(false) {
+                    error = start_runtime(app.handle())
+                        .err()
+                        .unwrap_or_else(|| "".into());
+                    if error.is_empty() {
+                        return Ok(());
+                    }
+                }
                 eprintln!("[dsh-star] startup failed: {error}");
                 reveal_recovery(app.handle(), &error);
             }
@@ -1081,7 +1844,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::harness_url;
+    use super::{harness_url, resolve_latest_harness, GitHubCommit, GitHubRelease, GitHubTag};
 
     #[test]
     fn extracts_only_loopback_harness_urls() {
@@ -1091,5 +1854,83 @@ mod tests {
         );
         assert!(harness_url("dsh web: http://127.0.0.1.example.com:49152").is_none());
         assert!(harness_url("dsh web: https://example.com").is_none());
+    }
+
+    #[test]
+    fn resolves_the_latest_published_official_harness_tag() {
+        let releases = vec![
+            GitHubRelease {
+                tag_name: "unrelated-v9".into(),
+                draft: false,
+            },
+            GitHubRelease {
+                tag_name: "dsh-v0.2.0".into(),
+                draft: false,
+            },
+        ];
+        let tags = vec![GitHubTag {
+            name: "dsh-v0.2.0".into(),
+            commit: GitHubCommit {
+                sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+        }];
+        assert_eq!(
+            resolve_latest_harness(&releases, &tags).unwrap(),
+            (
+                "dsh-v0.2.0".into(),
+                "0123456789abcdef0123456789abcdef01234567".into()
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_official_commit() {
+        let releases = vec![GitHubRelease {
+            tag_name: "dsh-v0.2.0".into(),
+            draft: false,
+        }];
+        let tags = vec![GitHubTag {
+            name: "dsh-v0.2.0".into(),
+            commit: GitHubCommit { sha: "main".into() },
+        }];
+        assert!(resolve_latest_harness(&releases, &tags).is_err());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn enforces_runtime_protocol_repository_platform_and_host_version() {
+        use super::{
+            embedded_upstream, runtime_metadata_compatible, ManagedHarness, ManagedHost,
+            ManagedManifest,
+        };
+        let lock = embedded_upstream().unwrap();
+        let platform = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            value => value,
+        };
+        let architecture = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            value => value,
+        };
+        let mut manifest = ManagedManifest {
+            protocol: "dsh-star/1".into(),
+            harness: ManagedHarness {
+                repository: lock.repository.clone(),
+                tag: "dsh-v9.0.0".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+            host: Some(ManagedHost {
+                min_version: env!("CARGO_PKG_VERSION").into(),
+            }),
+            platform: platform.into(),
+            architecture: architecture.into(),
+        };
+        assert!(runtime_metadata_compatible(&manifest, &lock));
+        manifest.host = Some(ManagedHost {
+            min_version: "99.0.0".into(),
+        });
+        assert!(!runtime_metadata_compatible(&manifest, &lock));
     }
 }

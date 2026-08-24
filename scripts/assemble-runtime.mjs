@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const upstream = join(root, "upstream/deepseek-harness");
+const hostPackage = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const destination = join(root, "runtime-dist/current");
 const archive = join(root, "runtime-dist/dsh-star-runtime.tar.gz");
 const harness = join(destination, "harness");
@@ -185,6 +186,9 @@ copyFileSync(join(upstream, "THIRD_PARTY_NOTICES.md"), join(destination, "THIRD_
 
 writeFileSync(join(destination, "runtime.json"), `${JSON.stringify({
   protocol: "dsh-star/1",
+  host: {
+    minVersion: hostPackage.version,
+  },
   harness: {
     repository: lock.repository,
     tag: lock.tag,
