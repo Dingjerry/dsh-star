@@ -258,8 +258,36 @@ function relativizeInternalLinks(directory, boundary, sourcePackage) {
   }
 }
 materializeExternalLinks(destination);
-const archived = spawnSync("tar", ["-czf", archive, "-C", destination, "."], { stdio: "inherit" });
-if (archived.status !== 0) throw new Error(`Runtime archive failed with ${archived.status ?? archived.signal}`);
+if (process.platform === "win32") {
+  // Windows bsdtar follows directory junctions in pnpm's virtual store and
+  // duplicates the same packages many times. 7-Zip's -snl/-snh switches keep
+  // reparse points as links, matching the compact Unix archive semantics.
+  const sevenZip = "C:\\Program Files\\7-Zip\\7z.exe";
+  const tarPath = join(root, "runtime-dist/dsh-star-runtime.tar");
+  rmSync(tarPath, { force: true });
+  const tarred = spawnSync(
+    sevenZip,
+    ["a", "-ttar", "-snl", "-snh", "-mx=0", tarPath, ".\\*"],
+    { cwd: destination, stdio: "inherit" },
+  );
+  if (tarred.status !== 0) {
+    throw new Error(`Runtime tar packaging failed with ${tarred.status ?? tarred.signal}`);
+  }
+  const gzipped = spawnSync(sevenZip, ["a", "-tgzip", "-mx=9", archive, tarPath], {
+    stdio: "inherit",
+  });
+  rmSync(tarPath, { force: true });
+  if (gzipped.status !== 0) {
+    throw new Error(`Runtime gzip packaging failed with ${gzipped.status ?? gzipped.signal}`);
+  }
+} else {
+  const archived = spawnSync("tar", ["-czf", archive, "-C", destination, "."], {
+    stdio: "inherit",
+  });
+  if (archived.status !== 0) {
+    throw new Error(`Runtime archive failed with ${archived.status ?? archived.signal}`);
+  }
+}
 
 // A Windows junction can accidentally expand the pnpm store while creating the
 // archive. Fail the build instead of publishing a multi-gigabyte package.
