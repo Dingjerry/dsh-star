@@ -381,7 +381,16 @@ fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("runtime");
     let entries =
         fs::read_dir(&base).map_err(|_| "未安装 DSH Star 运行时，请点击安装。".to_string())?;
-    for entry in entries.flatten() {
+    let mut entries = entries.flatten().collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
+    });
+    for entry in entries {
         let root = entry.path();
         if !root.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
             continue;
