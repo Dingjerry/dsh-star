@@ -11,7 +11,11 @@ const source = resolve(sourceArg);
 const output = resolve(outputArg);
 const archive = readFileSync(source);
 const digest = createHash("sha256").update(archive).digest();
-const key = createPrivateKey(Buffer.from(encodedKey, "base64"));
+const pem = encodedKey.includes("BEGIN PRIVATE KEY")
+  ? encodedKey
+  : Buffer.from(encodedKey, "base64").toString("utf8");
+if (!pem.includes("BEGIN PRIVATE KEY")) throw new Error("invalid runtime signing key encoding");
+const key = createPrivateKey(pem);
 const signature = sign(null, digest, key);
 if (signature.length !== 64) throw new Error("unexpected Ed25519 signature length");
 copyFileSync(source, output);
