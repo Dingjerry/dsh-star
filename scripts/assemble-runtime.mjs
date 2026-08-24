@@ -271,11 +271,16 @@ function relativizeInternalLinks(directory, boundary, sourcePackage) {
   }
 }
 function materializeWindowsLinks(directory, boundary = destination) {
+  // realpathSync normalizes Windows drive-letter casing and separators.  The
+  // deploy tree contains pnpm junctions whose targets may be reported with a
+  // different casing, so comparing a raw relative path incorrectly marks
+  // valid in-tree links as external.
+  const normalizedBoundary = realpathSync(boundary);
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       const target = realpathSync(path);
-      if (relative(boundary, target).startsWith("..")) {
+      if (relative(normalizedBoundary, target).startsWith("..")) {
         throw new Error(`Windows runtime retained an external reparse point: ${path}`);
       }
       // Refuse links that point to an ancestor: dereferencing one would create
@@ -285,7 +290,7 @@ function materializeWindowsLinks(directory, boundary = destination) {
       }
       rmSync(path, { force: true, recursive: true });
       cpSync(target, path, { recursive: true, dereference: true });
-      materializeWindowsLinks(path, boundary);
+      materializeWindowsLinks(path, normalizedBoundary);
       continue;
     }
     if (entry.isDirectory()) materializeWindowsLinks(path, boundary);
