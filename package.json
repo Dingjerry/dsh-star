@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "cargo tauri dev",
     "build": "cargo tauri build",
+    "build:bundled": "cargo tauri build --features bundled-runtime --config src-tauri/tauri.bundled.conf.json",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "check": "node scripts/verify-upstream.mjs && cargo check --manifest-path src-tauri/Cargo.toml",

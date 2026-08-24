@@ -23,11 +23,11 @@ modules required by that exact build. Rust starts the Harness CLI directly in
 its own process group and recognizes only a validated loopback readiness URL
 from stdout. There is no second Node launcher process.
 
-The macOS application carries that generation as a gzip-compressed tar archive
-because pnpm's dependency graph relies on symbolic links that Tauri's resource
-copier does not preserve. On first use, Rust expands the signed application
-resource into an app-data staging directory, validates the pinned manifest and
+The default lightweight application installs that generation separately as a
+signed runtime pack. On first use, Rust validates the pinned manifest and
 required entry points, and atomically activates a commit-addressed directory.
+The optional bundled build carries the same generation as a gzip-compressed tar
+archive for offline installation.
 It never extracts into a user profile. DSH Star sets `DSH_HOME` to an isolated
 `dsh-home` below its Tauri application-data directory, so its profiles,
 credentials, and desktop adapters cannot overwrite another host's shared
@@ -61,10 +61,10 @@ scripts/                     source, runtime, and release verification
 
 ## Release boundary
 
-Production artifacts must pass a runtime-closure check proving that Node,
-Harness packages, Web assets, native modules, notices, and the desktop plugin exist
-inside the application bundle. Release code must not search a developer home
-directory or silently use a system Node installation. The expanded runtime is
+Production runtime packs must pass a closure check proving that Node, Harness
+packages, Web assets, native modules, notices, and the desktop plugin exist.
+Release code must not search a developer home directory or silently use a
+system Node installation. The expanded runtime is
 an immutable cache keyed by the official Harness commit; user data remains in
 the upstream-defined DSH home layout inside DSH Star's isolated application-data
 directory.

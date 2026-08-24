@@ -1,4 +1,4 @@
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 use std::fs::File;
 use std::{fs, path::Path};
 use std::{
@@ -128,28 +128,50 @@ fn inspect_project_runtime() -> RuntimeCheck {
     }
 }
 
-#[cfg(not(debug_assertions))]
-fn inspect_project_runtime() -> RuntimeCheck {
-    RuntimeCheck {
-        node_found: true,
-        node_path: None,
-        node_version: None,
-        harness_found: true,
-        dependencies_ready: true,
-        can_start: true,
-        message: "将使用已验证的 DSH Star 内置运行时。".into(),
-    }
-}
-
 #[tauri::command]
-fn runtime_check() -> RuntimeCheck {
-    inspect_project_runtime()
+fn runtime_check(app: tauri::AppHandle) -> RuntimeCheck {
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        inspect_project_runtime()
+    }
+
+    #[cfg(not(debug_assertions))]
+    match managed_runtime(&app) {
+        Ok(runtime) => RuntimeCheck {
+            node_found: true,
+            node_path: Some(
+                runtime
+                    .join(if cfg!(windows) {
+                        "node/bin/node.exe"
+                    } else {
+                        "node/bin/node"
+                    })
+                    .display()
+                    .to_string(),
+            ),
+            node_version: None,
+            harness_found: true,
+            dependencies_ready: true,
+            can_start: true,
+            message: "已检测到受管理的 DSH Star 运行时。".into(),
+        },
+        Err(message) => RuntimeCheck {
+            node_found: false,
+            node_path: None,
+            node_version: None,
+            harness_found: false,
+            dependencies_ready: false,
+            can_start: false,
+            message,
+        },
+    }
 }
 
 #[tauri::command]
 fn install_runtime_dependencies() -> Result<String, String> {
     #[cfg(not(debug_assertions))]
-    return Err("正式版不会执行任意系统安装；请使用签名运行时安装包。".into());
+    return Err("尚未安装受信任的 DSH Star 运行时；在线签名安装将在下一步接入。".into());
 
     #[cfg(debug_assertions)]
     {
@@ -251,7 +273,7 @@ fn close_window_action(app: tauri::AppHandle, quit: bool) {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 #[derive(serde::Deserialize)]
 struct BundleManifest {
     harness: BundleHarness,
@@ -260,26 +282,44 @@ struct BundleManifest {
 
 #[cfg(not(debug_assertions))]
 #[derive(serde::Deserialize)]
+struct UpstreamLock {
+    commit: String,
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(serde::Deserialize)]
+struct ManagedManifest {
+    harness: ManagedHarness,
+}
+
+#[cfg(not(debug_assertions))]
+#[derive(serde::Deserialize)]
+struct ManagedHarness {
+    commit: String,
+}
+
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
+#[derive(serde::Deserialize)]
 struct BundleDesktop {
     sha256: String,
     #[serde(rename = "marketSha256")]
     market_sha256: String,
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 #[derive(serde::Deserialize)]
 struct BundleHarness {
     commit: String,
     client: BundleClient,
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 #[derive(serde::Deserialize)]
 struct BundleClient {
     artifacts: BundleArtifacts,
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 #[derive(serde::Deserialize)]
 struct BundleArtifacts {
     sha256: String,
@@ -309,6 +349,35 @@ fn validate_runtime(root: &Path, manifest: &str) -> bool {
 }
 
 #[cfg(not(debug_assertions))]
+fn managed_runtime(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let lock: UpstreamLock = serde_json::from_str(include_str!("../../upstream.json"))
+        .map_err(|error| format!("invalid embedded upstream lock: {error}"))?;
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("runtime");
+    let entries =
+        fs::read_dir(&base).map_err(|_| "未安装 DSH Star 运行时，请点击安装。".to_string())?;
+    for entry in entries.flatten() {
+        let root = entry.path();
+        if !root.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let Ok(manifest) = fs::read_to_string(root.join("runtime.json")) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_str::<ManagedManifest>(&manifest) else {
+            continue;
+        };
+        if metadata.harness.commit == lock.commit && validate_runtime(&root, &manifest) {
+            return Ok(root);
+        }
+    }
+    Err("未找到与当前版本匹配的受管理运行时，请点击安装。".into())
+}
+
+#[cfg(all(not(debug_assertions), feature = "bundled-runtime"))]
 fn install_runtime(app: &tauri::AppHandle, resources: &Path) -> Result<PathBuf, String> {
     let manifest = fs::read_to_string(resources.join("runtime/runtime.json"))
         .map_err(|error| format!("failed to read the signed runtime manifest: {error}"))?;
@@ -461,11 +530,16 @@ fn runtime_command(app: &tauri::AppHandle) -> Result<RuntimeCommand, String> {
 
     #[cfg(not(debug_assertions))]
     {
-        let resources = app
-            .path()
-            .resource_dir()
-            .map_err(|error| error.to_string())?;
-        let runtime = install_runtime(app, &resources)?;
+        #[cfg(feature = "bundled-runtime")]
+        let runtime = {
+            let resources = app
+                .path()
+                .resource_dir()
+                .map_err(|error| error.to_string())?;
+            install_runtime(app, &resources)?
+        };
+        #[cfg(not(feature = "bundled-runtime"))]
+        let runtime = managed_runtime(app)?;
         let node_name = if cfg!(windows) { "node.exe" } else { "node" };
         let node = runtime.join("node/bin").join(node_name);
         let cli = runtime.join("harness/lib/bin.js");

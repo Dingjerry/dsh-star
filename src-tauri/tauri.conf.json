@@ -32,10 +32,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "../runtime-dist/dsh-star-runtime.tar.gz": "runtime/dsh-star-runtime.tar.gz",
-      "../runtime-dist/current/runtime.json": "runtime/runtime.json"
-    }
+    ]
   }
 }
