@@ -15,6 +15,17 @@ const desktopPackage = join(root, "packages/dsh-star-desktop");
 const marketPackage = join(root, "packages/dsh-community-market");
 const pnpmCommand = "pnpm";
 const pnpmShell = process.platform === "win32";
+function deployProduction(filter, cwd, target) {
+  const args = [];
+  if (process.platform === "win32") args.push("--config.node-linker=hoisted");
+  args.push("--filter", filter, "deploy", "--prod", "--legacy", target);
+  return spawnSync(pnpmCommand, args, {
+    cwd,
+    env: { ...process.env, CI: "true" },
+    shell: pnpmShell,
+    stdio: "inherit",
+  });
+}
 const lock = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
 const desktopDigest = createHash("sha256")
   .update(readFileSync(join(desktopPackage, "package.json")))
@@ -60,12 +71,7 @@ mkdirSync(destination, { recursive: true });
 // added explicitly below from the pinned, already-built official checkout.
 // Shipping the complete development graph adds compilers, linters and tests to
 // the desktop bundle and more than doubles its size.
-const deployed = spawnSync(pnpmCommand, ["--filter", "@deepseek-ai/dsh", "deploy", "--prod", "--legacy", harness], {
-  cwd: upstream,
-  env: { ...process.env, CI: "true" },
-  shell: pnpmShell,
-  stdio: "inherit",
-});
+const deployed = deployProduction("@deepseek-ai/dsh", upstream, harness);
 if (deployed.status !== 0) throw new Error(`Harness deploy failed with ${deployed.status ?? deployed.signal}`);
 
 // rc2's app-boot imports this peer at runtime, while the CLI package does not
@@ -102,72 +108,64 @@ for (const manifest of manifests) {
 // Harness profiles load official plugins by bare package name from DSH_HOME.
 // Expose pnpm's deployed workspace packages at the installation root so the
 // official profile fallback can resolve them outside the source workspace.
-const virtualStore = join(harness, "node_modules/.pnpm");
-const virtualHoistRoot = join(virtualStore, "node_modules");
-const hoistedScope = join(virtualStore, "node_modules/@deepseek-ai");
-mkdirSync(hoistedScope, { recursive: true });
-for (const entry of readdirSync(virtualStore, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-  if (!entry.isDirectory()) continue;
-  const scope = join(virtualStore, entry.name, "node_modules/@deepseek-ai");
-  if (!existsSync(scope)) continue;
-  for (const pkg of readdirSync(scope, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+if (process.platform !== "win32") {
+  const virtualStore = join(harness, "node_modules/.pnpm");
+  const virtualHoistRoot = join(virtualStore, "node_modules");
+  const hoistedScope = join(virtualStore, "node_modules/@deepseek-ai");
+  mkdirSync(hoistedScope, { recursive: true });
+  for (const entry of readdirSync(virtualStore, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const scope = join(virtualStore, entry.name, "node_modules/@deepseek-ai");
+    if (!existsSync(scope)) continue;
+    for (const pkg of readdirSync(scope, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!pkg.isDirectory() && !pkg.isSymbolicLink()) continue;
+      const source = join(scope, pkg.name);
+      for (const target of [join(officialScope, pkg.name), join(hoistedScope, pkg.name)]) {
+        if (existsSync(target)) continue;
+        symlinkSync(relative(dirname(target), source), target, "dir");
+      }
+    }
+  }
+
+  // Packages copied from the upstream workspace sit at the flat install root,
+  // outside pnpm's generated per-importer dependency links. Mirror pnpm's public
+  // hoist view there so those official packages can resolve third-party imports
+  // such as zod and ws without relying on the source checkout's node_modules.
+  for (const dependency of readdirSync(virtualHoistRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const source = join(virtualHoistRoot, dependency.name);
+    const target = join(harness, "node_modules", dependency.name);
+    if (dependency.name.startsWith("@") && dependency.isDirectory()) {
+      mkdirSync(target, { recursive: true });
+      for (const scoped of readdirSync(source, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!scoped.isDirectory() && !scoped.isSymbolicLink()) continue;
+        const scopedSource = join(source, scoped.name);
+        const scopedTarget = join(target, scoped.name);
+        if (existsSync(scopedTarget)) continue;
+        symlinkSync(relative(dirname(scopedTarget), scopedSource), scopedTarget, "dir");
+      }
+      continue;
+    }
+    if ((!dependency.isDirectory() && !dependency.isSymbolicLink()) || existsSync(target)) continue;
+    symlinkSync(relative(dirname(target), source), target, "dir");
+  }
+
+  for (const pkg of readdirSync(officialScope, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!pkg.isDirectory() && !pkg.isSymbolicLink()) continue;
-    const source = join(scope, pkg.name);
-    for (const target of [join(officialScope, pkg.name), join(hoistedScope, pkg.name)]) {
-      if (existsSync(target)) continue;
-      symlinkSync(relative(dirname(target), source), target, process.platform === "win32" ? "junction" : "dir");
-    }
+    const target = join(hoistedScope, pkg.name);
+    if (existsSync(target)) continue;
+    symlinkSync(relative(dirname(target), join(officialScope, pkg.name)), target, "dir");
   }
-}
-
-// Packages copied from the upstream workspace sit at the flat install root,
-// outside pnpm's generated per-importer dependency links. Mirror pnpm's public
-// hoist view there so those official packages can resolve third-party imports
-// such as zod and ws without relying on the source checkout's node_modules.
-for (const dependency of readdirSync(virtualHoistRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-  const source = join(virtualHoistRoot, dependency.name);
-  const target = join(harness, "node_modules", dependency.name);
-  if (dependency.name.startsWith("@") && dependency.isDirectory()) {
-    mkdirSync(target, { recursive: true });
-    for (const scoped of readdirSync(source, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!scoped.isDirectory() && !scoped.isSymbolicLink()) continue;
-      const scopedSource = join(source, scoped.name);
-      const scopedTarget = join(target, scoped.name);
-      if (existsSync(scopedTarget)) continue;
-      symlinkSync(relative(dirname(scopedTarget), scopedSource), scopedTarget, process.platform === "win32" ? "junction" : "dir");
-    }
-    continue;
-  }
-  if ((!dependency.isDirectory() && !dependency.isSymbolicLink()) || existsSync(target)) continue;
-  symlinkSync(relative(dirname(target), source), target, process.platform === "win32" ? "junction" : "dir");
-}
-
-for (const pkg of readdirSync(officialScope, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-  if (!pkg.isDirectory() && !pkg.isSymbolicLink()) continue;
-  const target = join(hoistedScope, pkg.name);
-  if (existsSync(target)) continue;
-  symlinkSync(relative(dirname(target), join(officialScope, pkg.name)), target, process.platform === "win32" ? "junction" : "dir");
 }
 
 // DSH Star composes desktop-owned browser surfaces through the official
 // Cordis/client-module extension seam. It is copied beside, never into, an
 // upstream package and activated by an explicit launcher patch.
-const deployedDesktop = spawnSync(pnpmCommand, ["--filter", "dsh-star-desktop", "deploy", "--prod", "--legacy", desktopDeploy], {
-  cwd: root,
-  env: { ...process.env, CI: "true" },
-  shell: pnpmShell,
-  stdio: "inherit",
-});
+const deployedDesktop = deployProduction("dsh-star-desktop", root, desktopDeploy);
 if (deployedDesktop.status !== 0) throw new Error(`Desktop plugin deploy failed with ${deployedDesktop.status ?? deployedDesktop.signal}`);
 const desktopTarget = join(harness, "node_modules/dsh-star-desktop");
 relativizeInternalLinks(desktopDeploy, desktopDeploy, realpathSync(desktopPackage));
 renameSync(desktopDeploy, desktopTarget);
-const deployedMarket = spawnSync(pnpmCommand, ["--filter", "dsh-community-market", "deploy", "--prod", "--legacy", marketDeploy], {
-  cwd: root,
-  env: { ...process.env, CI: "true" },
-  shell: pnpmShell,
-  stdio: "inherit",
-});
+const deployedMarket = deployProduction("dsh-community-market", root, marketDeploy);
 if (deployedMarket.status !== 0) throw new Error(`Market deploy failed with ${deployedMarket.status ?? deployedMarket.signal}`);
 const marketTarget = join(harness, "node_modules/dsh-community-market");
 relativizeInternalLinks(marketDeploy, marketDeploy, realpathSync(marketPackage));
