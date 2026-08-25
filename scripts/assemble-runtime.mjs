@@ -18,8 +18,16 @@ const pnpmCommand = "pnpm";
 const pnpmShell = process.platform === "win32";
 function deployProduction(filter, cwd, target) {
   const args = [];
-  if (process.platform === "win32") args.push("--config.node-linker=hoisted");
-  args.push("--filter", filter, "deploy", "--prod", "--legacy", target);
+  if (process.platform === "win32") {
+    // pnpm's legacy deploy produces absolute directory junctions on Windows.
+    // Those links point back into the CI checkout and cannot be shipped as a
+    // portable runtime.  Modern deploy with injected workspace packages and a
+    // hoisted linker emits a self-contained flat tree instead.
+    args.push("--config.node-linker=hoisted", "--config.inject-workspace-packages=true");
+    args.push("--filter", filter, "deploy", "--prod", target);
+  } else {
+    args.push("--filter", filter, "deploy", "--prod", "--legacy", target);
+  }
   return spawnSync(pnpmCommand, args, {
     cwd,
     env: { ...process.env, CI: "true" },
