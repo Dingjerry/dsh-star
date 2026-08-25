@@ -21,7 +21,7 @@
   <body><div class="scene"><main>
     <div class="brand" aria-label="DeepSeek"><img src="deepseek-logo.svg" alt="DeepSeek" /></div>
     <h1><span>DeepSeek Harness 社区 Tauri 桌面版</span>DSH Star <small id="version">…</small></h1>
-    <div id="status-shell" class="status-shell"><i class="pulse"></i><div id="status">正在连接 DeepSeek Harness…</div></div><button id="retry" hidden onclick="location.reload()">重新连接 / Reconnect</button>
+    <div id="status-shell" class="status-shell"><i class="pulse"></i><div id="status">正在检查运行环境…</div></div><button id="retry" onclick="location.reload()">检查运行环境 / Check</button>
     </main></div><script>
       const status=document.querySelector('#status'),shell=document.querySelector('#status-shell'),retry=document.querySelector('#retry'),version=document.querySelector('#version');
       window.__DSH_STAR_SET_STATUS__=(message,failed=false)=>{status.textContent=message;shell.classList.toggle('failed',failed);retry.hidden=!failed;};
@@ -40,8 +40,14 @@
               try{status.textContent=await window.__TAURI__.core.invoke('install_runtime_dependencies');retry.hidden=true;shell.classList.remove('failed');}
               catch(e){window.__DSH_STAR_SET_STATUS__(String(e),true);retry.disabled=false;retry.textContent='重试安装 / Retry';}
             };
+          } else {
+            retry.hidden=true;
           }
-        }catch(e){ console.warn('runtime check unavailable',e); }
+        }catch(e){
+          window.__DSH_STAR_SET_STATUS__('无法连接本地运行时，请点击重试。',true);
+          retry.hidden=false; retry.textContent='重试 / Retry';
+          console.warn('runtime check unavailable',e);
+        }
       }
       inspect();
     </script></body>
