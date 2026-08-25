@@ -338,10 +338,37 @@ function materializeWindowsLinks(directory, allowedRoot = root) {
   }
 }
 materializeExternalLinks(destination);
+let windowsLinks = [];
 if (process.platform === "win32") {
-  // Do not pass junctions to an archive tool. Windows archive utilities may
-  // follow reparse points and duplicate the pnpm tree recursively.
-  materializeWindowsLinks(destination);
+  // Store junction topology separately. Expanding pnpm's dependency links
+  // duplicates the graph (and its cycles), while putting reparse points in a
+  // tar archive requires elevated symlink privileges when users extract it.
+  // Rust recreates these relative junctions after verified extraction.
+  const detachLinks = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = realpathSync(path);
+        if (relative(destination, target).startsWith("..")) {
+          throw new Error(`Windows runtime retained an external reparse point: ${path}`);
+        }
+        rmSync(path, { force: true, recursive: true });
+        if (statSync(target).isDirectory()) {
+          windowsLinks.push({
+            path: relative(destination, path).replaceAll("\\", "/"),
+            target: relative(destination, target).replaceAll("\\", "/"),
+          });
+        } else {
+          copyFileSync(target, path);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) detachLinks(path);
+    }
+  };
+  detachLinks(destination);
+  windowsLinks = windowsLinks.sort((a, b) => a.path.localeCompare(b.path));
+  writeFileSync(join(destination, "windows-links.json"), `${JSON.stringify(windowsLinks, null, 2)}\n`);
   // Windows bsdtar follows directory junctions in pnpm's virtual store and
   // duplicates the same packages many times. 7-Zip's -snl/-snh switches keep
   // reparse points as links, matching the compact Unix archive semantics.
@@ -369,6 +396,13 @@ if (process.platform === "win32") {
   rmSync(tarPath, { force: true });
   if (gzipped.status !== 0) {
     throw new Error(`Runtime gzip packaging failed with ${gzipped.status ?? gzipped.signal}`);
+  }
+  // Restore the working tree so the following smoke test exercises the same
+  // topology that Rust reconstructs after downloading the archive.
+  for (const link of windowsLinks) {
+    const path = join(destination, link.path);
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(join(destination, link.target), path, "junction");
   }
 } else {
   const archived = spawnSync("tar", ["-czf", archive, "-C", destination, "."], {
