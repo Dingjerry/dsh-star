@@ -1041,6 +1041,7 @@ fn install_signed_runtime(
         let _ = fs::remove_file(&download);
         return Err(format!("运行时解压失败：{error}"));
     }
+    restore_windows_runtime_links(&staging)?;
     let manifest = fs::read_to_string(staging.join("runtime.json"))
         .map_err(|error| format!("运行时清单缺失：{error}"))?;
     let metadata: ManagedManifest =
@@ -1381,6 +1382,7 @@ fn install_runtime(app: &tauri::AppHandle, resources: &Path) -> Result<PathBuf, 
         let _ = fs::remove_dir_all(&staging);
         return Err(format!("failed to install the signed runtime: {error}"));
     }
+    restore_windows_runtime_links(&staging)?;
     if !validate_runtime(&staging, &manifest) {
         let _ = fs::remove_dir_all(&staging);
         return Err("The installed DSH Star runtime is incomplete.".into());
@@ -1489,6 +1491,56 @@ fn runtime_command(app: &tauri::AppHandle) -> Result<RuntimeCommand, String> {
             harness: Some(harness),
         })
     }
+}
+
+#[cfg(windows)]
+fn restore_windows_runtime_links(root: &Path) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct RuntimeLink {
+        path: String,
+        target: String,
+    }
+
+    fn safe_relative(value: &str) -> Option<PathBuf> {
+        let path = Path::new(value);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        Some(path.to_path_buf())
+    }
+
+    let manifest_path = root.join("windows-links.json");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("Windows runtime link manifest is missing: {error}"))?;
+    let links: Vec<RuntimeLink> = serde_json::from_str(&manifest)
+        .map_err(|error| format!("Windows runtime link manifest is invalid: {error}"))?;
+    for link in links {
+        let relative_path = safe_relative(&link.path)
+            .ok_or_else(|| "Windows runtime link path is unsafe.".to_string())?;
+        let relative_target = safe_relative(&link.target)
+            .ok_or_else(|| "Windows runtime link target is unsafe.".to_string())?;
+        let path = root.join(relative_path);
+        let target = root.join(relative_target);
+        if !target.is_dir() {
+            return Err("Windows runtime link target is missing.".into());
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        junction::create(&target, &path)
+            .map_err(|error| format!("Failed to restore Windows runtime link: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn restore_windows_runtime_links(_root: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
