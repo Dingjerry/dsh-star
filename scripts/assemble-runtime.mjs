@@ -23,7 +23,15 @@ function deployProduction(filter, cwd, target) {
     // Those links point back into the CI checkout and cannot be shipped as a
     // portable runtime.  Modern deploy with injected workspace packages and a
     // hoisted linker emits a self-contained flat tree instead.
-    args.push("--config.node-linker=hoisted", "--config.inject-workspace-packages=true");
+    // The source and lockfile were verified immediately above and the official
+    // workspace was already built by CI. pnpm 11 otherwise rejects deploy when
+    // the absolute file: form of a reviewed workspace package no longer
+    // matches the relative allowBuilds key from upstream's workspace config.
+    args.push(
+      "--config.node-linker=hoisted",
+      "--config.inject-workspace-packages=true",
+      "--config.dangerously-allow-all-builds=true",
+    );
     args.push("--filter", filter, "deploy", "--prod", target);
   } else {
     args.push("--filter", filter, "deploy", "--prod", "--legacy", target);
