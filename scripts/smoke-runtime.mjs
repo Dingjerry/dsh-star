@@ -91,11 +91,14 @@ child.stdout.on("data", (chunk) => {
   }
 });
 
-child.on("close", (code) => {
+child.on("close", () => {
   clearTimeout(timeout);
   rmSync(home, { recursive: true, force: true });
   if (failure) console.error(failure.message);
-  if (failure || !ready || code !== 0) process.exitCode = 1;
+  // Windows reports a non-zero status when a healthy child is deliberately
+  // terminated after readiness. Readiness and health checks above are the
+  // smoke-test contract; only an actual failure or missing readiness fails.
+  if (failure || !ready) process.exitCode = 1;
 });
 
 child.on("error", fail);
