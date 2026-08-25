@@ -1826,19 +1826,26 @@ pub fn run() {
             let signal_app = app.handle().clone();
             ctrlc::set_handler(move || signal_app.exit(0))
                 .map_err(|error| format!("failed to install signal handler: {error}"))?;
+            // Let the boot page own the missing-runtime flow.  Starting the
+            // Harness before the page has loaded races the first
+            // `runtime_check` invocation and used to hide the install button
+            // behind an early recovery error.
+            let runtime_available = runtime_check(app.handle().clone()).can_start;
             #[allow(unused_mut)]
-            if let Err(mut error) = start_runtime(app.handle()) {
-                #[cfg(not(debug_assertions))]
-                if rollback_pending_runtime(app.handle()).unwrap_or(false) {
-                    error = start_runtime(app.handle())
-                        .err()
-                        .unwrap_or_else(|| "".into());
-                    if error.is_empty() {
-                        return Ok(());
+            if runtime_available {
+                if let Err(mut error) = start_runtime(app.handle()) {
+                    #[cfg(not(debug_assertions))]
+                    if rollback_pending_runtime(app.handle()).unwrap_or(false) {
+                        error = start_runtime(app.handle())
+                            .err()
+                            .unwrap_or_else(|| "".into());
+                        if error.is_empty() {
+                            return Ok(());
+                        }
                     }
+                    eprintln!("[dsh-star] startup failed: {error}");
+                    reveal_recovery(app.handle(), &error);
                 }
-                eprintln!("[dsh-star] startup failed: {error}");
-                reveal_recovery(app.handle(), &error);
             }
             Ok(())
         })
