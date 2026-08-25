@@ -1602,7 +1602,10 @@ fn start_runtime(app: &tauri::AppHandle) -> Result<(), String> {
         .env("DSH_HOME", &dsh_home)
         .env("DSH_STAR_PROFILE", "web")
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        // A release build is a GUI application.  Never inherit the parent's
+        // console for the managed Node/Harness child on Windows; otherwise
+        // launching the desktop app also opens a black command window.
+        .stderr(Stdio::null());
     if let Some(harness) = runtime.harness {
         command.current_dir(harness);
     }
@@ -1610,6 +1613,13 @@ fn start_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW keeps the supervised Node process invisible while
+        // retaining stdout for the exact loopback readiness handshake.
+        command.creation_flags(0x0800_0000);
     }
     let mut child = command
         .spawn()
