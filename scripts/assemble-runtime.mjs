@@ -337,7 +337,7 @@ function materializeWindowsLinks(directory, allowedRoot = root) {
     if (entry.isDirectory()) materializeWindowsLinks(path, normalizedAllowedRoot);
   }
 }
-materializeExternalLinks(destination);
+if (process.platform !== "win32") materializeExternalLinks(destination);
 let windowsLinks = [];
 if (process.platform === "win32") {
   // Store junction topology separately. Expanding pnpm's dependency links
@@ -350,7 +350,16 @@ if (process.platform === "win32") {
       if (entry.isSymbolicLink()) {
         const target = realpathSync(path);
         if (relative(destination, target).startsWith("..")) {
-          throw new Error(`Windows runtime retained an external reparse point: ${path}`);
+          if (relative(root, target).startsWith("..")) {
+            throw new Error(`Windows runtime retained an untrusted external reparse point: ${path}`);
+          }
+          rmSync(path, { force: true, recursive: true });
+          if (statSync(target).isDirectory()) {
+            copyMaterializedTree(target, path, root);
+          } else {
+            copyFileSync(target, path);
+          }
+          continue;
         }
         rmSync(path, { force: true, recursive: true });
         if (statSync(target).isDirectory()) {
