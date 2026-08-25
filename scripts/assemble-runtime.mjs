@@ -286,13 +286,45 @@ function relativizeInternalLinks(directory, boundary, sourcePackage) {
     if (entry.isDirectory()) relativizeInternalLinks(path, boundary, sourcePackage);
   }
 }
-function materializeWindowsLinks(directory, boundary = destination, allowedRoot = root) {
+function normalizedRealPath(path) {
+  return realpathSync(path).toLowerCase();
+}
+function copyMaterializedTree(source, target, activeTargets, allowedRoot) {
+  const sourceReal = realpathSync(source);
+  const sourceKey = sourceReal.toLowerCase();
+  if (activeTargets.has(sourceKey)) return;
+  if (relative(allowedRoot, sourceReal).startsWith("..")) {
+    throw new Error(`Windows runtime retained an external reparse point: ${source}`);
+  }
+  const nextTargets = new Set(activeTargets);
+  nextTargets.add(sourceKey);
+  mkdirSync(target, { recursive: true });
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const sourcePath = join(source, entry.name);
+    const targetPath = join(target, entry.name);
+    if (entry.isSymbolicLink()) {
+      const linked = realpathSync(sourcePath);
+      const linkedKey = linked.toLowerCase();
+      if (nextTargets.has(linkedKey)) continue;
+      if (statSync(linked).isDirectory()) {
+        copyMaterializedTree(linked, targetPath, nextTargets, allowedRoot);
+      } else {
+        copyFileSync(linked, targetPath);
+      }
+    } else if (entry.isDirectory()) {
+      copyMaterializedTree(sourcePath, targetPath, nextTargets, allowedRoot);
+    } else {
+      copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+function materializeWindowsLinks(directory, allowedRoot = root) {
   // realpathSync normalizes Windows drive-letter casing and separators.  The
   // deploy tree contains pnpm junctions whose targets may be reported with a
   // different casing, so comparing a raw relative path incorrectly marks
   // valid in-tree links as external.
-  const normalizedBoundary = realpathSync(boundary);
   const normalizedAllowedRoot = realpathSync(allowedRoot);
+  const activeTargets = new Set([normalizedRealPath(directory)]);
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
@@ -300,17 +332,15 @@ function materializeWindowsLinks(directory, boundary = destination, allowedRoot 
       if (relative(normalizedAllowedRoot, target).startsWith("..")) {
         throw new Error(`Windows runtime retained an external reparse point: ${path}`);
       }
-      // Refuse links that point to an ancestor: dereferencing one would create
-      // an infinite copy and is always a malformed deploy tree.
-      if (!relative(target, path).startsWith("..")) {
-        throw new Error(`Windows runtime contains a cyclic reparse point: ${path}`);
-      }
       rmSync(path, { force: true, recursive: true });
-      cpSync(target, path, { recursive: true, dereference: true });
-      materializeWindowsLinks(path, normalizedBoundary, normalizedAllowedRoot);
+      if (statSync(target).isDirectory()) {
+        copyMaterializedTree(target, path, activeTargets, normalizedAllowedRoot);
+      } else {
+        copyFileSync(target, path);
+      }
       continue;
     }
-    if (entry.isDirectory()) materializeWindowsLinks(path, boundary);
+    if (entry.isDirectory()) materializeWindowsLinks(path, normalizedAllowedRoot);
   }
 }
 materializeExternalLinks(destination);
