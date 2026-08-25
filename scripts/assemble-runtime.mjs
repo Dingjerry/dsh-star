@@ -16,6 +16,8 @@ const desktopPackage = join(root, "packages/dsh-star-desktop");
 const marketPackage = join(root, "packages/dsh-community-market");
 const pnpmCommand = "pnpm";
 const pnpmShell = process.platform === "win32";
+const excludesDevelopmentTree = (source) =>
+  !/(^|\/)(src|tests|node_modules)(\/|$)/.test(source.replaceAll("\\", "/"));
 function deployProduction(filter, cwd, target) {
   const args = [];
   if (process.platform === "win32") {
@@ -98,7 +100,7 @@ const groupTarget = join(harness, "node_modules/@deepseek-ai/cordis-plugin-group
 mkdirSync(dirname(groupTarget), { recursive: true });
 cpSync(join(upstream, "vendor/group"), groupTarget, {
   recursive: true,
-  filter: (source) => !/(^|\/)(src|tests|node_modules)(\/|$)/.test(source),
+  filter: excludesDevelopmentTree,
 });
 
 // pnpm deploy intentionally omits workspace packages that are reachable only
@@ -118,7 +120,7 @@ for (const manifest of manifests) {
   if (existsSync(target)) continue;
   cpSync(packageRoot, target, {
     recursive: true,
-    filter: (source) => !/(^|\/)(src|tests|node_modules)(\/|$)/.test(source),
+    filter: excludesDevelopmentTree,
   });
 }
 
