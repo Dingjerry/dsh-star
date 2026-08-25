@@ -74,7 +74,9 @@ jobs:
           New-Item -ItemType Directory -Force "src-tauri/target/release/bundle/portable/DSH Star" | Out-Null
           Copy-Item "src-tauri/target/release/dsh-star.exe" "src-tauri/target/release/bundle/portable/DSH Star/DSH Star.exe"
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_light.zip" "src-tauri/target/release/bundle/portable/DSH Star/*"
+          Push-Location "src-tauri/target/release/bundle/portable/DSH Star"
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=9 "../../DSH-Star_${version}_Windows-x64_light.zip" "*"
+          Pop-Location
           $updater = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
           if (-not $updater) { throw "Tauri did not create the Windows updater payload" }
           Copy-Item $updater.FullName "src-tauri/target/release/bundle/DSH-Star_${version}_Windows-x64_updater.exe"
