@@ -1152,6 +1152,13 @@ fn health_check_runtime(app: &tauri::AppHandle, runtime: &Path) -> Result<(), St
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // The post-install health check is also a background Node process and
+        // must never create a console beside the native boot window.
+        command.creation_flags(0x0800_0000);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动 Harness 健康检查：{error}"))?;

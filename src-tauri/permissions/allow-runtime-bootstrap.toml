@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-runtime-bootstrap"
+description = "Inspect and install the pinned, signed DSH Star runtime from the boot window."
+commands.allow = ["runtime_check", "install_runtime_dependencies"]

@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "allow-desktop-status",
+    "allow-runtime-bootstrap",
     "allow-set-launch-at-login",
     "allow-set-close-behavior",
     "allow-close-window-action",
